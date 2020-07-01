@@ -1,0 +1,181 @@
+/**
+ * Decoder using Wii U's h264.rpl
+ * Created 2020 by GaryOderNichts
+ */ 
+
+#include "h264_wiiu.h"
+
+#include "libavutil/imgutils.h"
+#include "internal.h"
+
+#include <malloc.h>
+
+static void frame_callback(H264DecodeOutput *output) { }
+
+static int h264_wiiu_decode_init(AVCodecContext *avctx)
+{
+    WIIUContext* ctx = avctx->priv_data;
+    uint32_t memRequirement;
+    int res;
+    void* decoder;
+    int framebuf_size;
+    void* framebuffer;
+
+    // TODO: Get profile and level. The avctx one are only -99
+    // Main profile, level 31 hardcoded for now
+    res = H264DECMemoryRequirement(0x4D, 31, avctx->width, avctx->height, &memRequirement);
+    if (res != 0)
+    {
+        av_log(avctx, AV_LOG_ERROR, "h264_wiiu: Error getting memory requirement for p=%d l=%d w=%d h=%d", avctx->profile, avctx->level, avctx->width, avctx->height);
+        return -1;
+    }
+
+    decoder = malloc(memRequirement);
+    res = H264DECInitParam(memRequirement, decoder);
+    if (res != 0)
+    {
+        av_log(avctx, AV_LOG_ERROR, "h264_wiiu: Error initializing decoder 0x%07X", res);
+        return -1;
+    }
+
+    res = H264DECSetParam_FPTR_OUTPUT(decoder, frame_callback);
+    if (res != 0)
+    {
+        av_log(avctx, AV_LOG_ERROR, "h264_wiiu: Error setting callback 0x%07X", res);
+        return -1;
+    }
+
+    res = H264DECSetParam_OUTPUT_PER_FRAME(decoder, 1);
+    if (res != 0)
+    {
+        av_log(avctx, AV_LOG_ERROR, "h264_wiiu: Error setting OUTPUT_PER_FRAME 0x%07X", res);
+        return -1;
+    }
+
+    res = H264DECOpen(decoder);
+    if (res != 0)
+    {
+        av_log(avctx, AV_LOG_ERROR, "h264_wiiu: Error opening decoder 0x%07X", res);
+        return -1;
+    }
+
+    res = H264DECBegin(decoder);
+    if (res != 0)
+    {
+        av_log(avctx, AV_LOG_ERROR, "h264_wiiu: Error preparing decoder 0x%07X", res);
+        return -1;
+    }
+
+    ctx->decoder = decoder;
+
+    framebuf_size = (avctx->width * avctx->height * 3) >> 1;
+    framebuffer = memalign(1024, framebuf_size);
+
+    ctx->framebuffer = framebuffer;
+    ctx->framebuffer_size = framebuf_size;
+
+    // Wii U decoder only outputs NV12
+    avctx->pix_fmt = AV_PIX_FMT_NV12;
+
+    return 0;
+}
+
+static int h264_wiiu_decode_close(AVCodecContext *avctx)
+{
+    WIIUContext* ctx = avctx->priv_data;
+    int res;
+    void* decoder = ctx->decoder;
+    void* framebuffer = ctx->framebuffer;
+
+    free(framebuffer);
+
+    res = H264DECFlush(decoder);
+    if (res != 0)
+        return -1;
+
+    res = H264DECEnd(decoder);
+    if (res != 0)
+        return -1;
+
+    res = H264DECClose(decoder);
+    if (res != 0)
+        return -1;
+
+    free(decoder);
+
+    return 0;
+}
+
+static int h264_wiiu_decode_frame(AVCodecContext *avctx, void *data, int *got_frame, AVPacket *avpkt)
+{
+    WIIUContext* ctx = avctx->priv_data;
+    uint8_t* buf = avpkt->buf->data;
+    int buf_size = avpkt->buf->size;
+    void* decoder = ctx->decoder;
+    void* framebuffer = ctx->framebuffer;
+    uint8_t* pointers[2];
+    AVFrame *avframe = data;
+    int pitch;
+    int linesize[2];
+    int res;
+    BOOL skippable = FALSE;
+
+    res = H264DECCheckSkipableFrame(buf, buf_size, &skippable);
+    if (res != 0)
+    {
+        av_log(avctx, AV_LOG_ERROR, "h264_wiiu: Error checking for skippable frame");
+        return -1;
+    }
+
+    if (skippable)
+    {
+        // skip the frame
+        return 0;
+    }
+
+    res = H264DECSetBitstream(decoder, buf, buf_size, 0);
+    if (res != 0)
+    {
+        av_log(avctx, AV_LOG_ERROR, "h264_wiiu: Error setting bitstream 0x%07X", res);
+        return -1;
+    }
+
+    res = H264DECExecute(decoder, framebuffer);
+    if (res != 0xE4)
+    {
+        av_log(avctx, AV_LOG_ERROR, "h264_wiiu: Error decoding frame 0x%07X", res);
+        return -1;
+    }
+
+    if (ff_get_buffer(avctx, avframe, 0) < 0) 
+    {
+        av_log(avctx, AV_LOG_ERROR, "h264_wiiu: Unable to allocate buffer");
+        return AVERROR(ENOMEM);
+    }
+
+    pitch = (avctx->width + (256 - 1)) & ~(256 - 1);
+    linesize[0] = linesize[1] = pitch;
+
+    // Y
+    pointers[0] = (uint8_t*) framebuffer;
+    // U/V
+    pointers[1] = ((uint8_t*) framebuffer) + (avctx->height * pitch);
+
+    av_image_copy(avframe->data, avframe->linesize, (const uint8_t **) pointers, linesize, AV_PIX_FMT_NV12, avctx->width, avctx->height);
+
+    *got_frame = 1;
+    return avpkt->size;
+}
+
+AVCodec ff_h264_wiiu_decoder =
+{
+    .name           = "h264_wiiu",
+    .long_name      = NULL_IF_CONFIG_SMALL("H.264 Decoder using h264.rpl"),
+    .type           = AVMEDIA_TYPE_VIDEO,
+    .id             = AV_CODEC_ID_H264,
+    .priv_data_size = sizeof(WIIUContext),
+    .init           = h264_wiiu_decode_init,
+    .close          = h264_wiiu_decode_close,
+    .decode         = h264_wiiu_decode_frame,
+    .bsfs           = "h264_mp4toannexb",
+};
