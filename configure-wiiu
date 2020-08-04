@@ -26,7 +26,7 @@ export CFLAGS="-fomit-frame-pointer -ffast-math -fno-math-errno -funsafe-math-op
 --target-os=none \
 --extra-cflags=" -D__WIIU__ $CFLAGS $ARCH -I$WUT_ROOT/include" \
 --extra-cxxflags=" -D__WIIU__ $CFLAGS -fno-rtti -fno-exceptions -std=gnu++11 $ARCH" \
---extra-ldflags=" -Wl,-q -Wl,-z,nocopyreloc -T $WUT_ROOT/share/wut.ld -L$WUT_ROOT/lib -lwut" \
+--extra-ldflags=" -Wl,-q -Wl,-z,nocopyreloc -specs=$WUT_ROOT/share/wut.specs -L$WUT_ROOT/lib -lwut" \
 --disable-debug \
 --disable-bzlib \
 --disable-iconv \
