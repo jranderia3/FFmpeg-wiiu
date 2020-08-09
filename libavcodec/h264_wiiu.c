@@ -89,17 +89,9 @@ static int h264_wiiu_decode_close(AVCodecContext *avctx)
 
     free(framebuffer);
 
-    res = H264DECFlush(decoder);
-    if (res != 0)
-        return -1;
-
-    res = H264DECEnd(decoder);
-    if (res != 0)
-        return -1;
-
-    res = H264DECClose(decoder);
-    if (res != 0)
-        return -1;
+    H264DECFlush(decoder);
+    H264DECEnd(decoder);
+    H264DECClose(decoder);
 
     free(decoder);
 
