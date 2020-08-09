@@ -21,6 +21,7 @@ export CFLAGS="-fomit-frame-pointer -ffast-math -fno-math-errno -funsafe-math-op
 --enable-filter=rotate,transpose \
 --enable-protocol=file \
 --enable-static \
+--enable-lzo \
 --arch=ppc \
 --cpu=750 \
 --target-os=none \
