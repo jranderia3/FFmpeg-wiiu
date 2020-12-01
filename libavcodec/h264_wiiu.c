@@ -21,14 +21,8 @@ static int h264_wiiu_decode_init(AVCodecContext *avctx)
     int framebuf_size;
     void* framebuffer;
 
-    // TODO: Get profile and level. The avctx one are only -99
-    // Main profile, level 31 hardcoded for now
-    res = H264DECMemoryRequirement(0x4D, 31, avctx->width, avctx->height, &memRequirement);
-    if (res != 0)
-    {
-        av_log(avctx, AV_LOG_ERROR, "h264_wiiu: Error getting memory requirement for p=%d l=%d w=%d h=%d", avctx->profile, avctx->level, avctx->width, avctx->height);
-        return -1;
-    }
+    // memory requirement for the maximum supported level (level 42)
+    memRequirement = 0x2200000 + 0x3ff + 0x480000;
 
     decoder = malloc(memRequirement);
     res = H264DECInitParam(memRequirement, decoder);
@@ -83,7 +77,6 @@ static int h264_wiiu_decode_init(AVCodecContext *avctx)
 static int h264_wiiu_decode_close(AVCodecContext *avctx)
 {
     WIIUContext* ctx = avctx->priv_data;
-    int res;
     void* decoder = ctx->decoder;
     void* framebuffer = ctx->framebuffer;
 
