@@ -37,4 +37,3 @@ export CONFIGLOG="config.log"
 --disable-securetransport \
 --disable-xlib \
 --disable-zlib \
---logfile=$CONFIG
