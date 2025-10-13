@@ -22,7 +22,6 @@ export PKGCONFIG="$DEVKITPRO/portlibs/ppc/bin/powerpc-eabi-pkg-config"
 --enable-filter=rotate,transpose \
 --enable-protocol=file \
 --enable-static \
---enable-lzo \
 --arch=ppc \
 --cpu=750 \
 --target-os=none \
