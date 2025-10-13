@@ -6,10 +6,11 @@
 export PATH=$DEVKITPPC/bin:$PATH
 export ARCH="-mcpu=750 -meabi -mhard-float"
 export CFLAGS="-fomit-frame-pointer -ffast-math -fno-math-errno -funsafe-math-optimizations -ffinite-math-only -fno-trapping-math -O3 -Ofast"
-
+export PKGCONFIG="$DEVKITPRO/portlibs/ppc/bin/powerpc-eabi-pkg-config"
 ./configure --prefix=$DEVKITPRO/portlibs/ppc/ \
 --enable-cross-compile \
 --cross-prefix=$DEVKITPPC/bin/powerpc-eabi- \
+--pkg-config=$PKGCONFIG \
 --disable-shared \
 --disable-runtime-cpudetect \
 --disable-programs \
