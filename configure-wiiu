@@ -16,6 +16,7 @@ export PKGCONFIG="$DEVKITPRO/portlibs/ppc/bin/powerpc-eabi-pkg-config"
 --disable-programs \
 --disable-doc \
 --disable-everything \
+--disable-network \
 --enable-decoder=mpeg4,h264_wiiu,aac,ac3,mp3 \
 --enable-demuxer=mov,h264 \
 --enable-bsf=h264_mp4toannexb \
