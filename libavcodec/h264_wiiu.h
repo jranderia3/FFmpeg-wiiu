@@ -8,6 +8,7 @@
 
 #include <wut.h>
 #include <h264/decode.h>
+#include "decode.h"
 
 #include <libswscale/swscale.h>
 #include "avcodec.h"

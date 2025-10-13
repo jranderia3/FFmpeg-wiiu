@@ -7,6 +7,7 @@
 
 #include "libavutil/imgutils.h"
 #include "internal.h"
+#include "codec_internal.h"
 
 #include <malloc.h>
 
@@ -91,7 +92,7 @@ static int h264_wiiu_decode_close(AVCodecContext *avctx)
     return 0;
 }
 
-static int h264_wiiu_decode_frame(AVCodecContext *avctx, void *data, int *got_frame, AVPacket *avpkt)
+static int h264_wiiu_decode_frame(AVCodecContext *avctx, AVFrame *data, int *got_frame, AVPacket *avpkt)
 {
     WIIUContext* ctx = avctx->priv_data;
     uint8_t* buf = avpkt->buf->data;
@@ -152,15 +153,15 @@ static int h264_wiiu_decode_frame(AVCodecContext *avctx, void *data, int *got_fr
     return avpkt->size;
 }
 
-AVCodec ff_h264_wiiu_decoder =
+const FFCodec ff_h264_wiiu_decoder =
 {
-    .name           = "h264_wiiu",
-    .long_name      = NULL_IF_CONFIG_SMALL("H.264 Decoder using h264.rpl"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_H264,
+    .p.name           = "h264_wiiu",
+    CODEC_LONG_NAME(NULL_IF_CONFIG_SMALL("H.264 Decoder using h264.rpl")),
+    .p.type           = AVMEDIA_TYPE_VIDEO,
+    .p.id             = AV_CODEC_ID_H264,
     .priv_data_size = sizeof(WIIUContext),
     .init           = h264_wiiu_decode_init,
     .close          = h264_wiiu_decode_close,
-    .decode         = h264_wiiu_decode_frame,
+    FF_CODEC_DECODE_CB(h264_wiiu_decode_frame),
     .bsfs           = "h264_mp4toannexb",
 };
