@@ -28,7 +28,11 @@
 #ifndef AVCODEC_DIRAC_ARITH_H
 #define AVCODEC_DIRAC_ARITH_H
 
+#include "config.h"
+
+#if ARCH_X86
 #include "libavutil/x86/asm.h"
+#endif
 #include "bytestream.h"
 #include "get_bits.h"
 
@@ -86,7 +90,6 @@ typedef struct {
 } DiracArith;
 
 extern const uint8_t ff_dirac_next_ctx[DIRAC_CTX_COUNT];
-extern const uint16_t ff_dirac_prob[256];
 extern int16_t ff_dirac_prob_branchless[256][2];
 
 static inline void renorm(DiracArith *c)

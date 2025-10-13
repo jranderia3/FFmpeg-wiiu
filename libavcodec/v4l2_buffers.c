@@ -28,8 +28,8 @@
 #include <fcntl.h>
 #include <poll.h>
 #include "libavcodec/avcodec.h"
-#include "libavcodec/internal.h"
 #include "libavutil/pixdesc.h"
+#include "refstruct.h"
 #include "v4l2_context.h"
 #include "v4l2_buffers.h"
 #include "v4l2_m2m.h"
@@ -230,7 +230,7 @@ static void v4l2_free_buffer(void *opaque, uint8_t *unused)
                 ff_v4l2_buffer_enqueue(avbuf);
         }
 
-        av_buffer_unref(&avbuf->context_ref);
+        ff_refstruct_unref(&avbuf->context_ref);
     }
 }
 
@@ -241,9 +241,7 @@ static int v4l2_buf_increase_ref(V4L2Buffer *in)
     if (in->context_ref)
         atomic_fetch_add(&in->context_refcount, 1);
     else {
-        in->context_ref = av_buffer_ref(s->self_ref);
-        if (!in->context_ref)
-            return AVERROR(ENOMEM);
+        in->context_ref = ff_refstruct_ref(s->self_ref);
 
         in->context_refcount = 1;
     }
@@ -274,7 +272,7 @@ static int v4l2_buf_to_bufref(V4L2Buffer *in, int plane, AVBufferRef **buf)
     return ret;
 }
 
-static int v4l2_bufref_to_buf(V4L2Buffer *out, int plane, const uint8_t* data, int size, int offset, AVBufferRef* bref)
+static int v4l2_bufref_to_buf(V4L2Buffer *out, int plane, const uint8_t* data, int size, int offset)
 {
     unsigned int bytesused, length;
 
@@ -386,7 +384,7 @@ static int v4l2_buffer_swframe_to_buf(const AVFrame *frame, V4L2Buffer *out)
                 h = AV_CEIL_RSHIFT(h, desc->log2_chroma_h);
             }
             size = frame->linesize[i] * h;
-            ret = v4l2_bufref_to_buf(out, 0, frame->data[i], size, offset, frame->buf[i]);
+            ret = v4l2_bufref_to_buf(out, 0, frame->data[i], size, offset);
             if (ret)
                 return ret;
             offset += size;
@@ -395,7 +393,7 @@ static int v4l2_buffer_swframe_to_buf(const AVFrame *frame, V4L2Buffer *out)
     }
 
     for (i = 0; i < out->num_planes; i++) {
-        ret = v4l2_bufref_to_buf(out, i, frame->buf[i]->data, frame->buf[i]->size, 0, frame->buf[i]);
+        ret = v4l2_bufref_to_buf(out, i, frame->buf[i]->data, frame->buf[i]->size, 0);
         if (ret)
             return ret;
     }
@@ -428,7 +426,8 @@ int ff_v4l2_buffer_buf_to_avframe(AVFrame *frame, V4L2Buffer *avbuf)
         return ret;
 
     /* 2. get frame information */
-    frame->key_frame = !!(avbuf->buf.flags & V4L2_BUF_FLAG_KEYFRAME);
+    if (avbuf->buf.flags & V4L2_BUF_FLAG_KEYFRAME)
+        frame->flags |= AV_FRAME_FLAG_KEY;
     frame->color_primaries = v4l2_get_color_primaries(avbuf);
     frame->colorspace = v4l2_get_color_space(avbuf);
     frame->color_range = v4l2_get_color_range(avbuf);
@@ -479,7 +478,7 @@ int ff_v4l2_buffer_avpkt_to_buf(const AVPacket *pkt, V4L2Buffer *out)
 {
     int ret;
 
-    ret = v4l2_bufref_to_buf(out, 0, pkt->data, pkt->size, 0, pkt->buf);
+    ret = v4l2_bufref_to_buf(out, 0, pkt->data, pkt->size, 0);
     if (ret)
         return ret;
 

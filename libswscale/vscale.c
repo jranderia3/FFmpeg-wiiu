@@ -17,6 +17,7 @@
  * License along with FFmpeg; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
+#include "libavutil/mem.h"
 #include "swscale_internal.h"
 
 typedef struct VScalerContext
@@ -237,7 +238,7 @@ int ff_init_vscale(SwsContext *c, SwsFilterDescriptor *desc, SwsSlice *src, SwsS
             desc[1].dst = dst;
         }
     } else {
-        lumCtx = av_mallocz_array(sizeof(VScalerContext), 2);
+        lumCtx = av_calloc(2, sizeof(*lumCtx));
         if (!lumCtx)
             return AVERROR(ENOMEM);
         chrCtx = &lumCtx[1];

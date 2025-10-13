@@ -28,9 +28,9 @@
 #include "libavutil/pixdesc.h"
 #include "avfilter.h"
 #include "drawutils.h"
+#include "filters.h"
 #include "formats.h"
 #include "video.h"
-#include "internal.h"
 
 typedef struct TileContext {
     const AVClass *class;
@@ -63,7 +63,7 @@ static const AVOption tile_options[] = {
     { "color",   "set the color of the unused area", OFFSET(rgba_color), AV_OPT_TYPE_COLOR, {.str = "black"}, .flags = FLAGS },
     { "overlap", "set how many frames to overlap for each render", OFFSET(overlap),
         AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, FLAGS },
-    { "init_padding", " set how many frames to initially pad", OFFSET(init_padding),
+    { "init_padding", "set how many frames to initially pad", OFFSET(init_padding),
         AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, FLAGS },
     { NULL }
 };
@@ -121,6 +121,8 @@ static int config_props(AVFilterLink *outlink)
     AVFilterContext *ctx = outlink->src;
     TileContext *tile    = ctx->priv;
     AVFilterLink *inlink = ctx->inputs[0];
+    FilterLink *il = ff_filter_link(inlink);
+    FilterLink *ol = ff_filter_link(outlink);
     const unsigned total_margin_w = (tile->w - 1) * tile->padding + 2*tile->margin;
     const unsigned total_margin_h = (tile->h - 1) * tile->padding + 2*tile->margin;
 
@@ -137,9 +139,8 @@ static int config_props(AVFilterLink *outlink)
     outlink->w = tile->w * inlink->w + total_margin_w;
     outlink->h = tile->h * inlink->h + total_margin_h;
     outlink->sample_aspect_ratio = inlink->sample_aspect_ratio;
-    outlink->frame_rate = av_mul_q(inlink->frame_rate,
-                                   av_make_q(1, tile->nb_frames - tile->overlap));
-    ff_draw_init(&tile->draw, inlink->format, 0);
+    ol->frame_rate = av_mul_q(il->frame_rate, av_make_q(1, tile->nb_frames - tile->overlap));
+    ff_draw_init2(&tile->draw, inlink->format, inlink->colorspace, inlink->color_range, 0);
     ff_draw_color(&tile->draw, &tile->blank, tile->rgba_color);
 
     return 0;
@@ -272,7 +273,6 @@ static const AVFilterPad tile_inputs[] = {
         .type         = AVMEDIA_TYPE_VIDEO,
         .filter_frame = filter_frame,
     },
-    { NULL }
 };
 
 static const AVFilterPad tile_outputs[] = {
@@ -282,17 +282,16 @@ static const AVFilterPad tile_outputs[] = {
         .config_props  = config_props,
         .request_frame = request_frame,
     },
-    { NULL }
 };
 
-AVFilter ff_vf_tile = {
+const AVFilter ff_vf_tile = {
     .name          = "tile",
     .description   = NULL_IF_CONFIG_SMALL("Tile several successive frames together."),
     .init          = init,
     .uninit        = uninit,
-    .query_formats = query_formats,
     .priv_size     = sizeof(TileContext),
-    .inputs        = tile_inputs,
-    .outputs       = tile_outputs,
+    FILTER_INPUTS(tile_inputs),
+    FILTER_OUTPUTS(tile_outputs),
+    FILTER_QUERY_FUNC(query_formats),
     .priv_class    = &tile_class,
 };

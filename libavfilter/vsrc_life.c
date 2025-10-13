@@ -29,12 +29,12 @@
 #include "libavutil/internal.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/lfg.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
-#include "libavutil/parseutils.h"
 #include "libavutil/random_seed.h"
 #include "libavutil/avstring.h"
 #include "avfilter.h"
-#include "internal.h"
+#include "filters.h"
 #include "formats.h"
 #include "video.h"
 
@@ -280,10 +280,12 @@ static av_cold void uninit(AVFilterContext *ctx)
 static int config_props(AVFilterLink *outlink)
 {
     LifeContext *life = outlink->src->priv;
+    FilterLink *l = ff_filter_link(outlink);
 
     outlink->w = life->w;
     outlink->h = life->h;
     outlink->time_base = av_inv_q(life->frame_rate);
+    l->frame_rate = life->frame_rate;
 
     return 0;
 }
@@ -403,6 +405,7 @@ static int request_frame(AVFilterLink *outlink)
         return AVERROR(ENOMEM);
     picref->sample_aspect_ratio = (AVRational) {1, 1};
     picref->pts = life->pts++;
+    picref->duration = 1;
 
     life->draw(outlink->src, picref);
     evolve(outlink->src);
@@ -416,7 +419,6 @@ static int query_formats(AVFilterContext *ctx)
 {
     LifeContext *life = ctx->priv;
     enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_NONE, AV_PIX_FMT_NONE };
-    AVFilterFormats *fmts_list;
 
     if (life->mold || memcmp(life-> life_color, "\xff\xff\xff", 3)
                    || memcmp(life->death_color, "\x00\x00\x00", 3)) {
@@ -427,8 +429,7 @@ static int query_formats(AVFilterContext *ctx)
         life->draw = fill_picture_monoblack;
     }
 
-    fmts_list = ff_make_format_list(pix_fmts);
-    return ff_set_common_formats(ctx, fmts_list);
+    return ff_set_common_formats_from_list(ctx, pix_fmts);
 }
 
 static const AVFilterPad life_outputs[] = {
@@ -438,17 +439,16 @@ static const AVFilterPad life_outputs[] = {
         .request_frame = request_frame,
         .config_props  = config_props,
     },
-    { NULL}
 };
 
-AVFilter ff_vsrc_life = {
+const AVFilter ff_vsrc_life = {
     .name          = "life",
     .description   = NULL_IF_CONFIG_SMALL("Create life."),
     .priv_size     = sizeof(LifeContext),
     .priv_class    = &life_class,
     .init          = init,
     .uninit        = uninit,
-    .query_formats = query_formats,
     .inputs        = NULL,
-    .outputs       = life_outputs,
+    FILTER_OUTPUTS(life_outputs),
+    FILTER_QUERY_FUNC(query_formats),
 };

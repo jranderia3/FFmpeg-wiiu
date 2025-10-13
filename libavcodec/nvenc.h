@@ -31,6 +31,7 @@ typedef void ID3D11Device;
 #include <ffnvcodec/nvEncodeAPI.h>
 
 #include "compat/cuda/dynlink_loader.h"
+#include "libavutil/buffer.h"
 #include "libavutil/fifo.h"
 #include "libavutil/opt.h"
 #include "hwconfig.h"
@@ -68,6 +69,28 @@ typedef void ID3D11Device;
 #define NVENC_HAVE_MULTIPASS
 #define NVENC_HAVE_LDKFS
 #define NVENC_HAVE_H264_LVL6
+#define NVENC_HAVE_HEVC_CONSTRAINED_ENCODING
+#endif
+
+// SDK 11.1 compile time feature checks
+#if NVENCAPI_CHECK_VERSION(11, 1)
+#define NVENC_HAVE_QP_CHROMA_OFFSETS
+#define NVENC_HAVE_SINGLE_SLICE_INTRA_REFRESH
+#endif
+
+// SDK 12.1 compile time feature checks
+#if NVENCAPI_CHECK_VERSION(12, 1)
+#define NVENC_NO_DEPRECATED_RC
+#define NVENC_HAVE_SPLIT_FRAME_ENCODING
+#endif
+
+// SDK 12.2 compile time feature checks
+#if NVENCAPI_CHECK_VERSION(12, 2)
+#define NVENC_HAVE_NEW_BIT_DEPTH_API
+#define NVENC_HAVE_TEMPORAL_FILTER
+#define NVENC_HAVE_LOOKAHEAD_LEVEL
+#define NVENC_HAVE_UHQ_TUNING
+#define NVENC_HAVE_UNIDIR_B
 #endif
 
 typedef struct NvencSurface
@@ -81,8 +104,15 @@ typedef struct NvencSurface
 
     NV_ENC_OUTPUT_PTR output_surface;
     NV_ENC_BUFFER_FORMAT format;
-    int size;
 } NvencSurface;
+
+typedef struct NvencFrameData
+{
+    int64_t duration;
+
+    void        *frame_opaque;
+    AVBufferRef *frame_opaque_ref;
+} NvencFrameData;
 
 typedef struct NvencDynLoadFunctions
 {
@@ -104,7 +134,7 @@ enum {
     PRESET_LOW_LATENCY_DEFAULT ,
     PRESET_LOW_LATENCY_HQ ,
     PRESET_LOW_LATENCY_HP,
-    PRESET_LOSSLESS_DEFAULT, // lossless presets must be the last ones
+    PRESET_LOSSLESS_DEFAULT,
     PRESET_LOSSLESS_HP,
 #ifdef NVENC_HAVE_NEW_PRESETS
     PRESET_P1,
@@ -135,11 +165,19 @@ enum {
     NVENC_LOSSLESS   = 2,
     NVENC_ONE_PASS   = 4,
     NVENC_TWO_PASSES = 8,
+
+    NVENC_DEPRECATED_PRESET = 0x8000,
 };
 
 enum {
     LIST_DEVICES = -2,
     ANY_DEVICE,
+};
+
+enum {
+    NVENC_RGB_MODE_DISABLED,
+    NVENC_RGB_MODE_420,
+    NVENC_RGB_MODE_444,
 };
 
 typedef struct NvencContext
@@ -160,10 +198,20 @@ typedef struct NvencContext
     int nb_surfaces;
     NvencSurface *surfaces;
 
-    AVFifoBuffer *unused_surface_queue;
-    AVFifoBuffer *output_surface_queue;
-    AVFifoBuffer *output_surface_ready_queue;
-    AVFifoBuffer *timestamp_list;
+    NvencFrameData *frame_data_array;
+    int frame_data_array_nb;
+    int frame_data_array_pos;
+
+    AVFifo *unused_surface_queue;
+    AVFifo *output_surface_queue;
+    AVFifo *output_surface_ready_queue;
+    AVFifo *timestamp_list;
+    // This is for DTS calculating, reset after flush
+    uint64_t output_frame_num;
+    int64_t initial_delay_time;
+
+    NV_ENC_SEI_PAYLOAD *sei_data;
+    int sei_data_size;
 
     struct {
         void *ptr;
@@ -182,12 +230,16 @@ typedef struct NvencContext
 
     void *nvencoder;
 
+    uint32_t frame_idx_counter;
+
     int preset;
     int profile;
     int level;
     int tier;
     int rc;
     int cbr;
+    int tile_rows;
+    int tile_cols;
     int twopass;
     int device;
     int flags;
@@ -209,6 +261,8 @@ typedef struct NvencContext
     int init_qp_b;
     int init_qp_i;
     int cqp;
+    int qp_cb_offset;
+    int qp_cr_offset;
     int weighted_pred;
     int coder;
     int b_ref_mode;
@@ -218,6 +272,19 @@ typedef struct NvencContext
     int tuning_info;
     int multipass;
     int ldkfs;
+    int extra_sei;
+    int intra_refresh;
+    int single_slice_intra_refresh;
+    int constrained_encoding;
+    int udu_sei;
+    int timing_info;
+    int highbitdepth;
+    int max_slice_size;
+    int rgb_mode;
+    int tf_level;
+    int lookahead_level;
+    int unidir_b;
+    int split_encode_mode;
 } NvencContext;
 
 int ff_nvenc_encode_init(AVCodecContext *avctx);
@@ -229,6 +296,6 @@ int ff_nvenc_receive_packet(AVCodecContext *avctx, AVPacket *pkt);
 void ff_nvenc_encode_flush(AVCodecContext *avctx);
 
 extern const enum AVPixelFormat ff_nvenc_pix_fmts[];
-extern const AVCodecHWConfigInternal *ff_nvenc_hw_configs[];
+extern const AVCodecHWConfigInternal *const ff_nvenc_hw_configs[];
 
 #endif /* AVCODEC_NVENC_H */

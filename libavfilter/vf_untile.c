@@ -24,6 +24,7 @@
 #include "avfilter.h"
 #include "formats.h"
 #include "filters.h"
+#include "video.h"
 
 typedef struct UntileContext {
     const AVClass *class;
@@ -62,16 +63,11 @@ static av_cold int init(AVFilterContext *ctx)
 
 static int query_formats(AVFilterContext *ctx)
 {
-    AVFilterFormats *formats = NULL;
-    int ret;
+    int reject_flags = AV_PIX_FMT_FLAG_HWACCEL   |
+                       AV_PIX_FMT_FLAG_BITSTREAM |
+                       FF_PIX_FMT_FLAG_SW_FLAT_SUB;
 
-    ret = ff_formats_pixdesc_filter(&formats, 0,
-                                    AV_PIX_FMT_FLAG_HWACCEL |
-                                    AV_PIX_FMT_FLAG_BITSTREAM |
-                                    FF_PIX_FMT_FLAG_SW_FLAT_SUB);
-    if (ret < 0)
-        return ret;
-    return ff_set_common_formats(ctx, formats);
+    return ff_set_common_formats(ctx, ff_formats_pixdesc_filter(0, reject_flags));
 }
 
 static int config_output(AVFilterLink *outlink)
@@ -79,6 +75,8 @@ static int config_output(AVFilterLink *outlink)
     AVFilterContext *ctx = outlink->src;
     UntileContext *s = ctx->priv;
     AVFilterLink *inlink = ctx->inputs[0];
+    FilterLink *il = ff_filter_link(inlink);
+    FilterLink *ol = ff_filter_link(outlink);
     AVRational dt;
 
     s->desc = av_pix_fmt_desc_get(outlink->format);
@@ -92,9 +90,9 @@ static int config_output(AVFilterLink *outlink)
     outlink->w = inlink->w / s->w;
     outlink->h = inlink->h / s->h;
     outlink->sample_aspect_ratio = inlink->sample_aspect_ratio;
-    outlink->frame_rate = av_mul_q(inlink->frame_rate, av_make_q(s->nb_frames, 1));
-    if (outlink->frame_rate.num)
-        dt = av_inv_q(outlink->frame_rate);
+    ol->frame_rate = av_mul_q(il->frame_rate, av_make_q(s->nb_frames, 1));
+    if (ol->frame_rate.num)
+        dt = av_inv_q(ol->frame_rate);
     else
         dt = av_mul_q(inlink->time_base, av_make_q(1, s->nb_frames));
     outlink->time_base = av_gcd_q(inlink->time_base, dt, AV_TIME_BASE / 2, AV_TIME_BASE_Q);
@@ -136,11 +134,11 @@ static int activate(AVFilterContext *ctx)
         out->height = outlink->h;
         out->data[0] += y * out->linesize[0];
         out->data[0] += x * s->max_step[0];
-        if (!(s->desc->flags & AV_PIX_FMT_FLAG_PAL || s->desc->flags & FF_PSEUDOPAL)) {
+        if (!(s->desc->flags & AV_PIX_FMT_FLAG_PAL)) {
             for (i = 1; i < 3; i ++) {
                 if (out->data[i]) {
-                    out->data[i] += (y >> s->desc->log2_chroma_w) * out->linesize[i];
-                    out->data[i] += (x >> s->desc->log2_chroma_h) * s->max_step[i];
+                    out->data[i] += (y >> s->desc->log2_chroma_h) * out->linesize[i];
+                    out->data[i] += (x >> s->desc->log2_chroma_w) * s->max_step[i];
                 }
             }
         }
@@ -167,32 +165,23 @@ static av_cold void uninit(AVFilterContext *ctx)
     av_frame_free(&s->frame);
 }
 
-static const AVFilterPad untile_inputs[] = {
-    {
-        .name         = "default",
-        .type         = AVMEDIA_TYPE_VIDEO,
-    },
-    { NULL }
-};
-
 static const AVFilterPad untile_outputs[] = {
     {
         .name          = "default",
         .type          = AVMEDIA_TYPE_VIDEO,
         .config_props  = config_output,
     },
-    { NULL }
 };
 
-AVFilter ff_vf_untile = {
+const AVFilter ff_vf_untile = {
     .name          = "untile",
     .description   = NULL_IF_CONFIG_SMALL("Untile a frame into a sequence of frames."),
     .init          = init,
     .uninit        = uninit,
-    .query_formats = query_formats,
     .activate      = activate,
     .priv_size     = sizeof(UntileContext),
-    .inputs        = untile_inputs,
-    .outputs       = untile_outputs,
+    FILTER_INPUTS(ff_video_default_filterpad),
+    FILTER_OUTPUTS(untile_outputs),
+    FILTER_QUERY_FUNC(query_formats),
     .priv_class    = &untile_class,
 };

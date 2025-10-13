@@ -34,6 +34,7 @@
 #include "libavutil/channel_layout.h"
 #include "libavutil/intreadwrite.h"
 #include "avformat.h"
+#include "demux.h"
 #include "internal.h"
 
 #define MM_PREAMBLE_SIZE    6
@@ -94,7 +95,7 @@ static int read_header(AVFormatContext *s)
     type = avio_rl16(pb);
     length = avio_rl32(pb);
 
-    if (type != MM_TYPE_HEADER)
+    if (type != MM_TYPE_HEADER || length < 10)
         return AVERROR_INVALIDDATA;
 
     /* read header */
@@ -124,8 +125,7 @@ static int read_header(AVFormatContext *s)
         st->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
         st->codecpar->codec_tag = 0; /* no fourcc */
         st->codecpar->codec_id = AV_CODEC_ID_PCM_U8;
-        st->codecpar->channels = 1;
-        st->codecpar->channel_layout = AV_CH_LAYOUT_MONO;
+        st->codecpar->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_MONO;
         st->codecpar->sample_rate = 8000;
         avpriv_set_pts_info(st, 64, 1, 8000); /* 8000 hz */
     }
@@ -175,6 +175,8 @@ static int read_packet(AVFormatContext *s,
             return 0;
 
         case MM_TYPE_AUDIO :
+            if (s->nb_streams < 2)
+                return AVERROR_INVALIDDATA;
             if ((ret = av_get_packet(s->pb, pkt, length)) < 0)
                 return ret;
             pkt->stream_index = 1;
@@ -188,9 +190,9 @@ static int read_packet(AVFormatContext *s,
     }
 }
 
-AVInputFormat ff_mm_demuxer = {
-    .name           = "mm",
-    .long_name      = NULL_IF_CONFIG_SMALL("American Laser Games MM"),
+const FFInputFormat ff_mm_demuxer = {
+    .p.name         = "mm",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("American Laser Games MM"),
     .priv_data_size = sizeof(MmDemuxContext),
     .read_probe     = probe,
     .read_header    = read_header,

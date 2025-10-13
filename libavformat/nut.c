@@ -20,6 +20,7 @@
  */
 
 #include "libavutil/mathematics.h"
+#include "libavutil/mem.h"
 #include "libavutil/tree.h"
 #include "nut.h"
 #include "riff.h"
@@ -27,6 +28,8 @@
 
 const AVCodecTag ff_nut_subtitle_tags[] = {
     { AV_CODEC_ID_TEXT,             MKTAG('U', 'T', 'F', '8') },
+    { AV_CODEC_ID_ASS,              MKTAG('S', 'S', 'A',  0 ) },
+    { AV_CODEC_ID_ASS,              MKTAG('A', 'S', 'S',  0 ) },
     { AV_CODEC_ID_DVD_SUBTITLE,     MKTAG('D', 'V', 'D', 'S') },
     { AV_CODEC_ID_DVB_SUBTITLE,     MKTAG('D', 'V', 'B', 'S') },
     { AV_CODEC_ID_DVB_TELETEXT,     MKTAG('D', 'V', 'B', 'T') },
@@ -182,6 +185,8 @@ const AVCodecTag ff_nut_video_tags[] = {
     { AV_CODEC_ID_RAWVIDEO,         MKTAG(10 , 00 , '4', 'G') },
     { AV_CODEC_ID_RAWVIDEO,         MKTAG('G', '4', 00 , 12 ) },
     { AV_CODEC_ID_RAWVIDEO,         MKTAG(12 , 00 , '4', 'G') },
+    { AV_CODEC_ID_RAWVIDEO,         MKTAG('G', '4', 00 , 14 ) },
+    { AV_CODEC_ID_RAWVIDEO,         MKTAG(14 , 00 , '4', 'G') },
     { AV_CODEC_ID_RAWVIDEO,         MKTAG('G', '4', 00 , 16 ) },
     { AV_CODEC_ID_RAWVIDEO,         MKTAG(16 , 00 , '4', 'G') },
 

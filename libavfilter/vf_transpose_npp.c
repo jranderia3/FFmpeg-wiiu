@@ -29,8 +29,8 @@
 #include "libavutil/pixdesc.h"
 
 #include "avfilter.h"
+#include "filters.h"
 #include "formats.h"
-#include "internal.h"
 #include "video.h"
 
 #define CHECK_CU(x) FF_CUDA_CHECK_DL(ctx, device_hwctx->internal->cuda_dl, x)
@@ -111,16 +111,6 @@ static void npptranspose_uninit(AVFilterContext *ctx)
     av_frame_free(&s->tmp_frame);
 }
 
-static int npptranspose_query_formats(AVFilterContext *ctx)
-{
-    static const enum AVPixelFormat pixel_formats[] = {
-        AV_PIX_FMT_CUDA, AV_PIX_FMT_NONE,
-    };
-
-    AVFilterFormats *pix_fmts = ff_make_format_list(pixel_formats);
-    return ff_set_common_formats(ctx, pix_fmts);
-}
-
 static int init_stage(NPPTransposeStageContext *stage, AVBufferRef *device_ctx)
 {
     AVBufferRef *out_ref = NULL;
@@ -188,6 +178,8 @@ static int format_is_supported(enum AVPixelFormat fmt)
 static int init_processing_chain(AVFilterContext *ctx, int in_width, int in_height,
                                  int out_width, int out_height)
 {
+    FilterLink        *inl = ff_filter_link(ctx->inputs[0]);
+    FilterLink       *outl = ff_filter_link(ctx->outputs[0]);
     NPPTransposeContext *s = ctx->priv;
     AVHWFramesContext *in_frames_ctx;
     enum AVPixelFormat format;
@@ -195,12 +187,12 @@ static int init_processing_chain(AVFilterContext *ctx, int in_width, int in_heig
     int rot_width = out_width, rot_height = out_height;
 
     /* check that we have a hw context */
-    if (!ctx->inputs[0]->hw_frames_ctx) {
+    if (!inl->hw_frames_ctx) {
         av_log(ctx, AV_LOG_ERROR, "No hw context provided on input\n");
         return AVERROR(EINVAL);
     }
 
-    in_frames_ctx = (AVHWFramesContext*)ctx->inputs[0]->hw_frames_ctx->data;
+    in_frames_ctx = (AVHWFramesContext*)inl->hw_frames_ctx->data;
     format        = in_frames_ctx->sw_format;
 
     if (!format_is_supported(format)) {
@@ -245,13 +237,13 @@ static int init_processing_chain(AVFilterContext *ctx, int in_width, int in_heig
     }
 
     if (last_stage >= 0) {
-        ctx->outputs[0]->hw_frames_ctx = av_buffer_ref(s->stages[last_stage].frames_ctx);
+        outl->hw_frames_ctx = av_buffer_ref(s->stages[last_stage].frames_ctx);
     } else {
-        ctx->outputs[0]->hw_frames_ctx = av_buffer_ref(ctx->inputs[0]->hw_frames_ctx);
+        outl->hw_frames_ctx = av_buffer_ref(inl->hw_frames_ctx);
         s->passthrough = 1;
     }
 
-    if (!ctx->outputs[0]->hw_frames_ctx)
+    if (!outl->hw_frames_ctx)
         return AVERROR(ENOMEM);
 
     return 0;
@@ -259,17 +251,19 @@ static int init_processing_chain(AVFilterContext *ctx, int in_width, int in_heig
 
 static int npptranspose_config_props(AVFilterLink *outlink)
 {
+    FilterLink     *outl   = ff_filter_link(outlink);
     AVFilterContext *ctx   = outlink->src;
     AVFilterLink *inlink   = ctx->inputs[0];
+    FilterLink      *inl   = ff_filter_link(inlink);
     NPPTransposeContext *s = ctx->priv;
     int ret;
 
     if ((inlink->w >= inlink->h && s->passthrough == NPP_TRANSPOSE_PT_TYPE_LANDSCAPE) ||
         (inlink->w <= inlink->h && s->passthrough == NPP_TRANSPOSE_PT_TYPE_PORTRAIT))
     {
-        if (inlink->hw_frames_ctx) {
-            outlink->hw_frames_ctx = av_buffer_ref(inlink->hw_frames_ctx);
-            if (!outlink->hw_frames_ctx)
+        if (inl->hw_frames_ctx) {
+            outl->hw_frames_ctx = av_buffer_ref(inl->hw_frames_ctx);
+            if (!outl->hw_frames_ctx)
                 return AVERROR(ENOMEM);
         }
 
@@ -310,7 +304,7 @@ static int npptranspose_rotate(AVFilterContext *ctx, NPPTransposeStageContext *s
 
         // nppRotate uses 0,0 as the rotation point
         // need to shift the image accordingly after rotation
-        // need to substract 1 to get the correct coordinates
+        // need to subtract 1 to get the correct coordinates
         double angle = s->dir == NPP_TRANSPOSE_CLOCK ? -90.0 : s->dir == NPP_TRANSPOSE_CCLOCK ? 90.0 : 180.0;
         int shiftw = (s->dir == NPP_TRANSPOSE_CLOCK  || s->dir == NPP_TRANSPOSE_CLOCK_FLIP) ? ow - 1 : 0;
         int shifth = (s->dir == NPP_TRANSPOSE_CCLOCK || s->dir == NPP_TRANSPOSE_CLOCK_FLIP) ? oh - 1 : 0;
@@ -397,7 +391,8 @@ static int npptranspose_filter_frame(AVFilterLink *link, AVFrame *in)
     AVFilterContext              *ctx = link->dst;
     NPPTransposeContext            *s = ctx->priv;
     AVFilterLink             *outlink = ctx->outputs[0];
-    AVHWFramesContext     *frames_ctx = (AVHWFramesContext*)outlink->hw_frames_ctx->data;
+    FilterLink                  *outl = ff_filter_link(outlink);
+    AVHWFramesContext     *frames_ctx = (AVHWFramesContext*)outl->hw_frames_ctx->data;
     AVCUDADeviceContext *device_hwctx = frames_ctx->device_ctx->hwctx;
     AVFrame *out = NULL;
     CUcontext dummy;
@@ -436,15 +431,15 @@ fail:
 #define FLAGS (AV_OPT_FLAG_FILTERING_PARAM|AV_OPT_FLAG_VIDEO_PARAM)
 
 static const AVOption options[] = {
-    { "dir", "set transpose direction", OFFSET(dir), AV_OPT_TYPE_INT, { .i64 = NPP_TRANSPOSE_CCLOCK_FLIP }, 0, 3, FLAGS, "dir" },
-        { "cclock_flip", "rotate counter-clockwise with vertical flip", 0, AV_OPT_TYPE_CONST, { .i64 = NPP_TRANSPOSE_CCLOCK_FLIP }, 0, 0, FLAGS, "dir" },
-        { "clock",       "rotate clockwise",                            0, AV_OPT_TYPE_CONST, { .i64 = NPP_TRANSPOSE_CLOCK       }, 0, 0, FLAGS, "dir" },
-        { "cclock",      "rotate counter-clockwise",                    0, AV_OPT_TYPE_CONST, { .i64 = NPP_TRANSPOSE_CCLOCK      }, 0, 0, FLAGS, "dir" },
-        { "clock_flip",  "rotate clockwise with vertical flip",         0, AV_OPT_TYPE_CONST, { .i64 = NPP_TRANSPOSE_CLOCK_FLIP  }, 0, 0, FLAGS, "dir" },
-    { "passthrough", "do not apply transposition if the input matches the specified geometry", OFFSET(passthrough), AV_OPT_TYPE_INT, { .i64 = NPP_TRANSPOSE_PT_TYPE_NONE },  0, 2, FLAGS, "passthrough" },
-        { "none",      "always apply transposition",  0, AV_OPT_TYPE_CONST, { .i64 = NPP_TRANSPOSE_PT_TYPE_NONE },      0, 0, FLAGS, "passthrough" },
-        { "landscape", "preserve landscape geometry", 0, AV_OPT_TYPE_CONST, { .i64 = NPP_TRANSPOSE_PT_TYPE_LANDSCAPE }, 0, 0, FLAGS, "passthrough" },
-        { "portrait",  "preserve portrait geometry",  0, AV_OPT_TYPE_CONST, { .i64 = NPP_TRANSPOSE_PT_TYPE_PORTRAIT },  0, 0, FLAGS, "passthrough" },
+    { "dir", "set transpose direction", OFFSET(dir), AV_OPT_TYPE_INT, { .i64 = NPP_TRANSPOSE_CCLOCK_FLIP }, 0, 3, FLAGS, .unit = "dir" },
+        { "cclock_flip", "rotate counter-clockwise with vertical flip", 0, AV_OPT_TYPE_CONST, { .i64 = NPP_TRANSPOSE_CCLOCK_FLIP }, 0, 0, FLAGS, .unit = "dir" },
+        { "clock",       "rotate clockwise",                            0, AV_OPT_TYPE_CONST, { .i64 = NPP_TRANSPOSE_CLOCK       }, 0, 0, FLAGS, .unit = "dir" },
+        { "cclock",      "rotate counter-clockwise",                    0, AV_OPT_TYPE_CONST, { .i64 = NPP_TRANSPOSE_CCLOCK      }, 0, 0, FLAGS, .unit = "dir" },
+        { "clock_flip",  "rotate clockwise with vertical flip",         0, AV_OPT_TYPE_CONST, { .i64 = NPP_TRANSPOSE_CLOCK_FLIP  }, 0, 0, FLAGS, .unit = "dir" },
+    { "passthrough", "do not apply transposition if the input matches the specified geometry", OFFSET(passthrough), AV_OPT_TYPE_INT, { .i64 = NPP_TRANSPOSE_PT_TYPE_NONE },  0, 2, FLAGS, .unit = "passthrough" },
+        { "none",      "always apply transposition",  0, AV_OPT_TYPE_CONST, { .i64 = NPP_TRANSPOSE_PT_TYPE_NONE },      0, 0, FLAGS, .unit = "passthrough" },
+        { "landscape", "preserve landscape geometry", 0, AV_OPT_TYPE_CONST, { .i64 = NPP_TRANSPOSE_PT_TYPE_LANDSCAPE }, 0, 0, FLAGS, .unit = "passthrough" },
+        { "portrait",  "preserve portrait geometry",  0, AV_OPT_TYPE_CONST, { .i64 = NPP_TRANSPOSE_PT_TYPE_PORTRAIT },  0, 0, FLAGS, .unit = "passthrough" },
     { NULL },
 };
 
@@ -461,7 +456,6 @@ static const AVFilterPad npptranspose_inputs[] = {
         .type         = AVMEDIA_TYPE_VIDEO,
         .filter_frame = npptranspose_filter_frame,
     },
-    { NULL }
 };
 
 static const AVFilterPad npptranspose_outputs[] = {
@@ -470,18 +464,17 @@ static const AVFilterPad npptranspose_outputs[] = {
         .type         = AVMEDIA_TYPE_VIDEO,
         .config_props = npptranspose_config_props,
     },
-    { NULL }
 };
 
-AVFilter ff_vf_transpose_npp = {
+const AVFilter ff_vf_transpose_npp = {
     .name           = "transpose_npp",
     .description    = NULL_IF_CONFIG_SMALL("NVIDIA Performance Primitives video transpose"),
     .init           = npptranspose_init,
     .uninit         = npptranspose_uninit,
-    .query_formats  = npptranspose_query_formats,
     .priv_size      = sizeof(NPPTransposeContext),
     .priv_class     = &npptranspose_class,
-    .inputs         = npptranspose_inputs,
-    .outputs        = npptranspose_outputs,
+    FILTER_INPUTS(npptranspose_inputs),
+    FILTER_OUTPUTS(npptranspose_outputs),
+    FILTER_SINGLE_PIXFMT(AV_PIX_FMT_CUDA),
     .flags_internal = FF_FILTER_FLAG_HWFRAME_AWARE,
 };

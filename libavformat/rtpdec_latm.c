@@ -23,6 +23,7 @@
 #include "rtpdec_formats.h"
 #include "internal.h"
 #include "libavutil/avstring.h"
+#include "libavutil/mem.h"
 #include "libavcodec/get_bits.h"
 
 struct PayloadContext {
@@ -101,7 +102,9 @@ static int parse_fmtp_config(AVStream *st, const char *value)
     if (!config)
         return AVERROR(ENOMEM);
     ff_hex_to_data(config, value);
-    init_get_bits(&gb, config, len*8);
+    ret = init_get_bits(&gb, config, len*8);
+    if (ret < 0)
+        return ret;
     audio_mux_version = get_bits(&gb, 1);
     same_time_framing = get_bits(&gb, 1);
     skip_bits(&gb, 6); /* num_sub_frames */

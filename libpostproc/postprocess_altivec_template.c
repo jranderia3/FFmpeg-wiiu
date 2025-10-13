@@ -21,6 +21,7 @@
  */
 
 #include "libavutil/avutil.h"
+#include "libavutil/mem_internal.h"
 
 #define ALTIVEC_TRANSPOSE_8x8_SHORT(src_a,src_b,src_c,src_d,src_e,src_f,src_g,src_h) \
     do {                                                          \
@@ -529,7 +530,7 @@ static inline void doVertDefFilter_altivec(uint8_t src[], int stride, PPContext 
      STORE(5)
 }
 
-static inline void dering_altivec(uint8_t src[], int stride, PPContext *c) {
+static inline void dering_altivec(uint8_t src[], int stride, PPContext *c, int leftborder, int rightborder, int topborder) {
     const vector signed int vsint32_8 = vec_splat_s32(8);
     const vector unsigned int vuint32_4 = vec_splat_u32(4);
     const vector signed char neg1 = vec_splat_s8(-1);
@@ -575,6 +576,9 @@ static inline void dering_altivec(uint8_t src[], int stride, PPContext *c) {
     DECLARE_ALIGNED(16, uint8_t, dt)[16] = { deringThreshold };
     const vector signed int zero = vec_splat_s32(0);
     vector unsigned char v_dt = vec_splat(vec_ld(0, dt), 0);
+
+    if (topborder)
+        return;
 
 #define LOAD_LINE(i)                                                  \
     const vector unsigned char perm##i =                              \

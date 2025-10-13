@@ -19,24 +19,15 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "avformat.h"
-#include "internal.h"
 #include "network.h"
 #include "os_support.h"
 #include "url.h"
 #include "tls.h"
-#include "libavcodec/internal.h"
-#include "libavutil/avstring.h"
-#include "libavutil/avutil.h"
 #include "libavutil/opt.h"
-#include "libavutil/parseutils.h"
-#include "libavutil/thread.h"
 
 #include <openssl/bio.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
-
-static int openssl_init;
 
 typedef struct TLSContext {
     const AVClass *class;
@@ -46,10 +37,25 @@ typedef struct TLSContext {
 #if OPENSSL_VERSION_NUMBER >= 0x1010000fL
     BIO_METHOD* url_bio_method;
 #endif
+    int io_err;
 } TLSContext;
 
-#if HAVE_THREADS && OPENSSL_VERSION_NUMBER < 0x10100000L
+/* OpenSSL 1.0.2 or below, then you would use SSL_library_init. If you are
+ * using OpenSSL 1.1.0 or above, then the library will initialize
+ * itself automatically.
+ * https://wiki.openssl.org/index.php/Library_Initialization
+ */
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+#include "libavutil/thread.h"
+
+static AVMutex openssl_mutex = AV_MUTEX_INITIALIZER;
+
+static int openssl_init;
+
+#if HAVE_THREADS
 #include <openssl/crypto.h>
+#include "libavutil/mem.h"
+
 pthread_mutex_t *openssl_mutexes;
 static void openssl_lock(int mode, int type, const char *file, int line)
 {
@@ -68,23 +74,16 @@ static unsigned long openssl_thread_id(void)
 
 int ff_openssl_init(void)
 {
-    ff_lock_avformat();
+    ff_mutex_lock(&openssl_mutex);
     if (!openssl_init) {
-        /* OpenSSL 1.0.2 or below, then you would use SSL_library_init. If you are
-         * using OpenSSL 1.1.0 or above, then the library will initialize
-         * itself automatically.
-         * https://wiki.openssl.org/index.php/Library_Initialization
-         */
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
         SSL_library_init();
         SSL_load_error_strings();
-#endif
-#if HAVE_THREADS && OPENSSL_VERSION_NUMBER < 0x10100000L
+#if HAVE_THREADS
         if (!CRYPTO_get_locking_callback()) {
             int i;
             openssl_mutexes = av_malloc_array(sizeof(pthread_mutex_t), CRYPTO_num_locks());
             if (!openssl_mutexes) {
-                ff_unlock_avformat();
+                ff_mutex_unlock(&openssl_mutex);
                 return AVERROR(ENOMEM);
             }
 
@@ -98,17 +97,17 @@ int ff_openssl_init(void)
 #endif
     }
     openssl_init++;
-    ff_unlock_avformat();
+    ff_mutex_unlock(&openssl_mutex);
 
     return 0;
 }
 
 void ff_openssl_deinit(void)
 {
-    ff_lock_avformat();
+    ff_mutex_lock(&openssl_mutex);
     openssl_init--;
     if (!openssl_init) {
-#if HAVE_THREADS && OPENSSL_VERSION_NUMBER < 0x10100000L
+#if HAVE_THREADS
         if (CRYPTO_get_locking_callback() == openssl_lock) {
             int i;
             CRYPTO_set_locking_callback(NULL);
@@ -118,19 +117,32 @@ void ff_openssl_deinit(void)
         }
 #endif
     }
-    ff_unlock_avformat();
+    ff_mutex_unlock(&openssl_mutex);
 }
+#endif
 
 static int print_tls_error(URLContext *h, int ret)
 {
     TLSContext *c = h->priv_data;
+    int printed = 0, e, averr = AVERROR(EIO);
     if (h->flags & AVIO_FLAG_NONBLOCK) {
         int err = SSL_get_error(c->ssl, ret);
         if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE)
             return AVERROR(EAGAIN);
     }
-    av_log(h, AV_LOG_ERROR, "%s\n", ERR_error_string(ERR_get_error(), NULL));
-    return AVERROR(EIO);
+    while ((e = ERR_get_error()) != 0) {
+        av_log(h, AV_LOG_ERROR, "%s\n", ERR_error_string(e, NULL));
+        printed = 1;
+    }
+    if (c->io_err) {
+        av_log(h, AV_LOG_ERROR, "IO error: %s\n", av_err2str(c->io_err));
+        printed = 1;
+        averr = c->io_err;
+        c->io_err = 0;
+    }
+    if (!printed)
+        av_log(h, AV_LOG_ERROR, "Unknown error\n");
+    return averr;
 }
 
 static int tls_close(URLContext *h)
@@ -147,7 +159,9 @@ static int tls_close(URLContext *h)
     if (c->url_bio_method)
         BIO_meth_free(c->url_bio_method);
 #endif
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
     ff_openssl_deinit();
+#endif
     return 0;
 }
 
@@ -178,29 +192,33 @@ static int url_bio_destroy(BIO *b)
 
 static int url_bio_bread(BIO *b, char *buf, int len)
 {
-    URLContext *h = GET_BIO_DATA(b);
-    int ret = ffurl_read(h, buf, len);
+    TLSContext *c = GET_BIO_DATA(b);
+    int ret = ffurl_read(c->tls_shared.tcp, buf, len);
     if (ret >= 0)
         return ret;
     BIO_clear_retry_flags(b);
-    if (ret == AVERROR(EAGAIN))
-        BIO_set_retry_read(b);
     if (ret == AVERROR_EXIT)
         return 0;
+    if (ret == AVERROR(EAGAIN))
+        BIO_set_retry_read(b);
+    else
+        c->io_err = ret;
     return -1;
 }
 
 static int url_bio_bwrite(BIO *b, const char *buf, int len)
 {
-    URLContext *h = GET_BIO_DATA(b);
-    int ret = ffurl_write(h, buf, len);
+    TLSContext *c = GET_BIO_DATA(b);
+    int ret = ffurl_write(c->tls_shared.tcp, buf, len);
     if (ret >= 0)
         return ret;
     BIO_clear_retry_flags(b);
-    if (ret == AVERROR(EAGAIN))
-        BIO_set_retry_write(b);
     if (ret == AVERROR_EXIT)
         return 0;
+    if (ret == AVERROR(EAGAIN))
+        BIO_set_retry_write(b);
+    else
+        c->io_err = ret;
     return -1;
 }
 
@@ -239,8 +257,10 @@ static int tls_open(URLContext *h, const char *uri, int flags, AVDictionary **op
     BIO *bio;
     int ret;
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
     if ((ret = ff_openssl_init()) < 0)
         return ret;
+#endif
 
     if ((ret = ff_tls_open_underlying(c, h, uri, options)) < 0)
         goto fail;
@@ -291,10 +311,10 @@ static int tls_open(URLContext *h, const char *uri, int flags, AVDictionary **op
     BIO_meth_set_create(p->url_bio_method, url_bio_create);
     BIO_meth_set_destroy(p->url_bio_method, url_bio_destroy);
     bio = BIO_new(p->url_bio_method);
-    BIO_set_data(bio, c->tcp);
+    BIO_set_data(bio, p);
 #else
     bio = BIO_new(&url_bio_method);
-    bio->ptr = c->tcp;
+    bio->ptr = p;
 #endif
     SSL_set_bio(p->ssl, bio, bio);
     if (!c->listen && !c->numerichost)
@@ -351,6 +371,12 @@ static int tls_get_file_handle(URLContext *h)
     return ffurl_get_file_handle(c->tls_shared.tcp);
 }
 
+static int tls_get_short_seek(URLContext *h)
+{
+    TLSContext *s = h->priv_data;
+    return ffurl_get_short_seek(s->tls_shared.tcp);
+}
+
 static const AVOption options[] = {
     TLS_COMMON_OPTIONS(TLSContext, tls_shared),
     { NULL }
@@ -370,6 +396,7 @@ const URLProtocol ff_tls_protocol = {
     .url_write      = tls_write,
     .url_close      = tls_close,
     .url_get_file_handle = tls_get_file_handle,
+    .url_get_short_seek  = tls_get_short_seek,
     .priv_data_size = sizeof(TLSContext),
     .flags          = URL_PROTOCOL_FLAG_NETWORK,
     .priv_data_class = &tls_class,

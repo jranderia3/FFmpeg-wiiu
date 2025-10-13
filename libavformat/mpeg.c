@@ -19,8 +19,13 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "config_components.h"
+
+#include "libavutil/channel_layout.h"
+#include "libavutil/mem.h"
 #include "avformat.h"
 #include "avio_internal.h"
+#include "demux.h"
 #include "internal.h"
 #include "mpeg.h"
 
@@ -70,6 +75,9 @@ static int mpegps_probe(const AVProbeData *p)
             int len  = p->buf[i + 1] << 8 | p->buf[i + 2];
             int pes  = endpes <= i && check_pes(p->buf + i, p->buf + p->buf_size);
             int pack = check_pack_header(p->buf + i);
+
+            if (len > INT_MAX - i)
+                break;
 
             if (code == SYSTEM_HEADER_START_CODE)
                 sys++;
@@ -147,9 +155,12 @@ static int mpegps_read_header(AVFormatContext *s)
 static int64_t get_pts(AVIOContext *pb, int c)
 {
     uint8_t buf[5];
+    int ret;
 
     buf[0] = c < 0 ? avio_r8(pb) : c;
-    avio_read(pb, buf + 1, 4);
+    ret = avio_read(pb, buf + 1, 4);
+    if (ret < 4)
+        return AV_NOPTS_VALUE;
 
     return ff_parse_pes_pts(buf);
 }
@@ -474,6 +485,7 @@ static int mpegps_read_packet(AVFormatContext *s,
 {
     MpegDemuxContext *m = s->priv_data;
     AVStream *st;
+    FFStream *sti;
     int len, startcode, i, es_type, ret;
     int pcm_dvd = 0;
     int request_probe= 0;
@@ -538,8 +550,14 @@ redo:
     } else if (es_type == STREAM_TYPE_VIDEO_HEVC) {
         codec_id = AV_CODEC_ID_HEVC;
         type     = AVMEDIA_TYPE_VIDEO;
+    } else if (es_type == STREAM_TYPE_VIDEO_VVC) {
+        codec_id = AV_CODEC_ID_VVC;
+        type     = AVMEDIA_TYPE_VIDEO;
     } else if (es_type == STREAM_TYPE_AUDIO_AC3) {
         codec_id = AV_CODEC_ID_AC3;
+        type     = AVMEDIA_TYPE_AUDIO;
+    } else if (es_type == 0x90) {
+        codec_id = AV_CODEC_ID_PCM_ALAW;
         type     = AVMEDIA_TYPE_AUDIO;
     } else if (m->imkh_cctv && es_type == 0x91) {
         codec_id = AV_CODEC_ID_PCM_MULAW;
@@ -548,7 +566,9 @@ redo:
         static const unsigned char avs_seqh[4] = { 0, 0, 1, 0xb0 };
         unsigned char buf[8];
 
-        avio_read(s->pb, buf, 8);
+        ret = avio_read(s->pb, buf, 8);
+        if (ret != 8)
+            return AVERROR_INVALIDDATA;
         avio_seek(s->pb, -8, SEEK_CUR);
         if (!memcmp(buf, avs_seqh, 4) && (buf[6] != 0 || buf[7] != 1))
             codec_id = AV_CODEC_ID_CAVS;
@@ -610,17 +630,17 @@ skip:
     st = avformat_new_stream(s, NULL);
     if (!st)
         goto skip;
+    sti = ffstream(st);
     st->id                = startcode;
     st->codecpar->codec_type = type;
     st->codecpar->codec_id   = codec_id;
     if (   st->codecpar->codec_id == AV_CODEC_ID_PCM_MULAW
         || st->codecpar->codec_id == AV_CODEC_ID_PCM_ALAW) {
-        st->codecpar->channels = 1;
-        st->codecpar->channel_layout = AV_CH_LAYOUT_MONO;
+        st->codecpar->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_MONO;
         st->codecpar->sample_rate = 8000;
     }
-    st->request_probe     = request_probe;
-    st->need_parsing      = AVSTREAM_PARSE_FULL;
+    sti->request_probe = request_probe;
+    sti->need_parsing  = AVSTREAM_PARSE_FULL;
 
 found:
     if (st->discard >= AVDISCARD_ALL)
@@ -678,15 +698,15 @@ static int64_t mpegps_read_dts(AVFormatContext *s, int stream_index,
     return dts;
 }
 
-AVInputFormat ff_mpegps_demuxer = {
-    .name           = "mpeg",
-    .long_name      = NULL_IF_CONFIG_SMALL("MPEG-PS (MPEG-2 Program Stream)"),
+const FFInputFormat ff_mpegps_demuxer = {
+    .p.name         = "mpeg",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("MPEG-PS (MPEG-2 Program Stream)"),
+    .p.flags        = AVFMT_SHOW_IDS | AVFMT_TS_DISCONT,
     .priv_data_size = sizeof(MpegDemuxContext),
     .read_probe     = mpegps_probe,
     .read_header    = mpegps_read_header,
     .read_packet    = mpegps_read_packet,
     .read_timestamp = mpegps_read_dts,
-    .flags          = AVFMT_SHOW_IDS | AVFMT_TS_DISCONT,
 };
 
 #if CONFIG_VOBSUB_DEMUXER
@@ -720,8 +740,7 @@ static int vobsub_read_close(AVFormatContext *s)
 
     for (i = 0; i < s->nb_streams; i++)
         ff_subtitles_queue_clean(&vobsub->q[i]);
-    if (vobsub->sub_ctx)
-        avformat_close_input(&vobsub->sub_ctx);
+    avformat_close_input(&vobsub->sub_ctx);
     return 0;
 }
 
@@ -729,6 +748,7 @@ static int vobsub_read_header(AVFormatContext *s)
 {
     int i, ret = 0, header_parsed = 0, langidx = 0;
     VobSubDemuxContext *vobsub = s->priv_data;
+    const AVInputFormat *iformat;
     size_t fname_len;
     AVBPrint header;
     int64_t delay = 0;
@@ -736,7 +756,6 @@ static int vobsub_read_header(AVFormatContext *s)
     int stream_id = -1;
     char id[64] = {0};
     char alt[MAX_LINE_SIZE] = {0};
-    ff_const59 AVInputFormat *iformat;
 
     if (!vobsub->sub_name) {
         char *ext;
@@ -765,16 +784,16 @@ static int vobsub_read_header(AVFormatContext *s)
         return AVERROR(ENOMEM);
     }
 
-    av_bprint_init(&header, 0, INT_MAX - AV_INPUT_BUFFER_PADDING_SIZE);
-
     if ((ret = ff_copy_whiteblacklists(vobsub->sub_ctx, s)) < 0)
-        goto end;
+        return ret;
 
     ret = avformat_open_input(&vobsub->sub_ctx, vobsub->sub_name, iformat, NULL);
     if (ret < 0) {
         av_log(s, AV_LOG_ERROR, "Unable to open %s as MPEG subtitles\n", vobsub->sub_name);
-        goto end;
+        return ret;
     }
+
+    av_bprint_init(&header, 0, INT_MAX - AV_INPUT_BUFFER_PADDING_SIZE);
 
     while (!avio_feof(s->pb)) {
         char line[MAX_LINE_SIZE];
@@ -908,8 +927,6 @@ static int vobsub_read_header(AVFormatContext *s)
         memcpy(par->extradata, header.str, header.len);
     }
 end:
-    if (ret < 0)
-        vobsub_read_close(s);
     av_bprint_finalize(&header, NULL);
     return ret;
 }
@@ -931,7 +948,7 @@ static int vobsub_read_packet(AVFormatContext *s, AVPacket *pkt)
         if (tmpq->current_sub_idx >= tmpq->nb_subs)
             continue;
 
-        ts = tmpq->subs[tmpq->current_sub_idx].pts;
+        ts = tmpq->subs[tmpq->current_sub_idx]->pts;
         if (ts < min_ts) {
             min_ts = ts;
             sid = i;
@@ -947,7 +964,7 @@ static int vobsub_read_packet(AVFormatContext *s, AVPacket *pkt)
     /* compute maximum packet size using the next packet position. This is
      * useful when the len in the header is non-sense */
     if (q->current_sub_idx < q->nb_subs) {
-        psize = q->subs[q->current_sub_idx].pos - pkt->pos;
+        psize = q->subs[q->current_sub_idx]->pos - pkt->pos;
     } else {
         int64_t fsize = avio_size(pb);
         psize = fsize < 0 ? 0xffff : fsize - pkt->pos;
@@ -1037,17 +1054,18 @@ static const AVClass vobsub_demuxer_class = {
     .version    = LIBAVUTIL_VERSION_INT,
 };
 
-AVInputFormat ff_vobsub_demuxer = {
-    .name           = "vobsub",
-    .long_name      = NULL_IF_CONFIG_SMALL("VobSub subtitle format"),
+const FFInputFormat ff_vobsub_demuxer = {
+    .p.name         = "vobsub",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("VobSub subtitle format"),
+    .p.flags        = AVFMT_SHOW_IDS,
+    .p.extensions   = "idx",
+    .p.priv_class   = &vobsub_demuxer_class,
     .priv_data_size = sizeof(VobSubDemuxContext),
+    .flags_internal = FF_INFMT_FLAG_INIT_CLEANUP,
     .read_probe     = vobsub_probe,
     .read_header    = vobsub_read_header,
     .read_packet    = vobsub_read_packet,
     .read_seek2     = vobsub_read_seek,
     .read_close     = vobsub_read_close,
-    .flags          = AVFMT_SHOW_IDS,
-    .extensions     = "idx",
-    .priv_class     = &vobsub_demuxer_class,
 };
 #endif

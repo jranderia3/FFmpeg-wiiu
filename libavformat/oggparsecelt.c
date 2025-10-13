@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "libavutil/intreadwrite.h"
+#include "libavutil/mem.h"
 #include "avformat.h"
 #include "internal.h"
 #include "oggdec.h"
@@ -64,7 +65,7 @@ static int celt_header(AVFormatContext *s, int idx)
         st->codecpar->codec_type     = AVMEDIA_TYPE_AUDIO;
         st->codecpar->codec_id       = AV_CODEC_ID_CELT;
         st->codecpar->sample_rate    = sample_rate;
-        st->codecpar->channels       = nb_channels;
+        st->codecpar->ch_layout.nb_channels = nb_channels;
         if (sample_rate)
             avpriv_set_pts_info(st, 64, 1, sample_rate);
 
