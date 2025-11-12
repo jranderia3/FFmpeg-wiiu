@@ -2118,6 +2118,7 @@ THREADS_LIST="
     pthreads
     os2threads
     w32threads
+    wiiuthreads
 "
 
 ATOMICS_LIST="
@@ -5983,12 +5984,18 @@ case $target_os in
         ;;
     minix)
         ;;
+    wiiu)
+        echo "CAFE OS detected so cool"
+        enable_weak wiiuthreads
+        disable pthreads
+        ;;
     none)
         ;;
     *)
         die "Unknown OS '$target_os'."
         ;;
 esac
+
 
 # test if creating links works
 link_dest=$(mktemp -u $TMPDIR/dest_XXXXXXXX)

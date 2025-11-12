@@ -8,15 +8,75 @@
 #include <coreinit/thread.h>
 #include <coreinit/mutex.h>
 #include <coreinit/atomic.h>
+#include <coreinit/condition.h>
+
+#include <stdint.h>
+#include <malloc.h>
+#include <string.h>
+#include <sys/errno.h>
+#include <sys/time.h>
+
+#include <coreinit/alarm.h>
+#include <coreinit/systeminfo.h>
+#include <coreinit/time.h>
+
+#include "libavutil/attributes.h"
+#include "libavutil/common.h"
+#include "libavutil/time.h"
+
+// enum from wut_thread_specific.h
+typedef enum __wut_thread_specific_id
+{
+   WUT_THREAD_SPECIFIC_0 = 0,
+   WUT_THREAD_SPECIFIC_1 = 1,
+} __wut_thread_specific_id;
+
+// a bunch of defines from wut_gthread by GaryOderNichts
+#define __WUT_MAX_KEYS               (128)
+#define __WUT_STACK_SIZE             (128 * 1024)
+
+#define __WUT_ONCE_VALUE_INIT        (0)
+#define __WUT_ONCE_VALUE_STARTED     (1)
+#define __WUT_ONCE_VALUE_DONE        (2)
+
+#define __WUT_KEY_THREAD_SPECIFIC_ID WUT_THREAD_SPECIFIC_0
+
+typedef volatile uint32_t __wut_once_t;
+typedef struct
+{
+   uint32_t index;
+} __wut_key_t;
+
+// from wut_clock.h
+// The Wii U OSTime epoch is at 2000, so we must map it to 1970 for gettime
+#define WIIU_OSTIME_EPOCH_YEAR         (2000)
+// The Wii U FSTime epoch is at 1980, so we must map it to 1970 for gettime
+#define WIIU_FSTIME_EPOCH_YEAR         (1980)
+
+#define EPOCH_YEAR                     (1970)
+#define EPOCH_YEARS_SINCE_LEAP         2
+#define EPOCH_YEARS_SINCE_CENTURY      70
+#define EPOCH_YEARS_SINCE_LEAP_CENTURY 370
+
+#define EPOCH_DIFF_YEARS(year)         (year - EPOCH_YEAR)
+#define EPOCH_DIFF_DAYS(year)                                        \
+   ((EPOCH_DIFF_YEARS(year) * 365) +                                 \
+    (EPOCH_DIFF_YEARS(year) - 1 + EPOCH_YEARS_SINCE_LEAP) / 4 -      \
+    (EPOCH_DIFF_YEARS(year) - 1 + EPOCH_YEARS_SINCE_CENTURY) / 100 + \
+    (EPOCH_DIFF_YEARS(year) - 1 + EPOCH_YEARS_SINCE_LEAP_CENTURY) / 400)
+#define EPOCH_DIFF_SECS(year) (60ull * 60ull * 24ull * (uint64_t)EPOCH_DIFF_DAYS(year))
 
 // I have no idea why we have to typedef this
 // But ok
-typedef struct {
-    TID tid;
-    void *(*start_routine)(void *);
-    void *arg;
-    void *result;
-} pthread_t;
+// typedef struct {
+//     TID tid;
+//     void *(*start_routine)(void *);
+//     void *arg;
+//     void *result;
+// } pthread_t;
+
+// screw the above what if i just do this instead
+typedef OSThread pthread_t;
 
 typedef OSThreadAttributes pthread_attr_t;
 
@@ -27,6 +87,7 @@ typedef OSThreadAttributes pthread_attr_t;
 // Use that instead? Idk so I'll use this for now,
 // as it seems safer
 typedef OSMutex pthread_mutex_t;
+typedef void pthread_mutexattr_t;
 
 // docs say something about OScondition
 // using a thread queue
@@ -35,61 +96,74 @@ typedef OSCondition pthread_cond_t;
 typedef void pthread_condattr_t;
 
 
-// what the heck is once lmao
-// just gonna yoink this from os2threads.h
-typedef struct {
-    volatile int done;
-    OSThread mtx;
-} pthread_once_t;
+typedef __wut_once_t pthread_once_t;
+
+uint32_t __attribute__((weak)) __wut_thread_default_stack_size = __WUT_STACK_SIZE;
 
 #define ONCE_VALUE_INIT 0
 #define ONCE_VALUE_STARTED 1
 #define ONCE_VALUE_DONE 2
 
-static int pthread_create(pthread_t *thread, const pthread_mutex_t *attr,
+// stuff for timed wait
+// taken from wii u toolkit
+struct __wut_cond_timedwait_data_t
+{
+    OSCondition *cond;
+    bool timed_out;
+};
+
+static void __wut_thread_deallocator(OSThread *thread,
+                                     void *stack)
+{
+   free(thread);
+   free(stack);
+}
+
+
+static int pthread_create(pthread_t *out_thread, const pthread_attr_t *attr,
                           void *(*start_routine)(void*), void *arg)
 {
-   OSThread *thread = (OSThread *)memalign(16, sizeof(OSThread));
-   if (!thread) {
-      return ENOMEM;
-   }
+    OSThread *thread = (OSThread *)memalign(16, sizeof(OSThread));
+    if (!thread) {
+        return ENOMEM;
+    }
 
-   memset(thread, 0, sizeof(OSThread));
+    memset(thread, 0, sizeof(OSThread));
 
-   char *stack = (char *)memalign(16, __wut_thread_default_stack_size);
-   if (!stack) {
-      free(thread);
-      return ENOMEM;
-   }
+    char *stack = (char *)memalign(16, __wut_thread_default_stack_size);
+    if (!stack) {
+        free(thread);
+        return ENOMEM;
+    }
 
-   if (!OSCreateThread(thread,
-                       (OSThreadEntryPointFn)entryPoint,
-                       (int)entryArgs,
-                       NULL,
-                       stack + __wut_thread_default_stack_size,
-                       __wut_thread_default_stack_size,
-                       16,
-                       OS_THREAD_ATTRIB_AFFINITY_ANY)) {
-      free(thread);
-      free(stack);
-      return EINVAL;
-   }
+    if (!OSCreateThread(thread,
+                        (OSThreadEntryPointFn)start_routine,
+                        (int)arg,
+                        NULL,
+                        stack + __wut_thread_default_stack_size,
+                        __wut_thread_default_stack_size,
+                        16,
+                        OS_THREAD_ATTRIB_AFFINITY_ANY)) {
+        free(thread);
+        free(stack);
+        return EINVAL;
+    }
 
-   *outThread = thread;
-   OSSetThreadDeallocator(thread, &__wut_thread_deallocator);
-   OSSetThreadCleanupCallback(thread, &__wut_thread_cleanup);
+    *out_thread = thread;
+    OSSetThreadDeallocator(thread, &__wut_thread_deallocator);
+    // OSSetThreadCleanupCallback(thread, &__wut_thread_cleanup);
 
-   // Set a thread run quantum to 1 millisecond, to force the threads to
-   // behave more like pre-emptive scheduling rather than co-operative.
-   OSSetThreadRunQuantum(thread, 1000);
+    // Set a thread run quantum to 1 millisecond, to force the threads to
+    // behave more like pre-emptive scheduling rather than co-operative.
+    OSSetThreadRunQuantum(thread, 1000);
 
-   OSResumeThread(thread);
-   return 0;
+    OSResumeThread(thread);
+    return 0;
 }
 
 static int pthread_join(pthread_t thread, void **value_ptr)
 {
-    if (!OSJoinThread(*thread, (int *)*retval)) {
+    if (!OSJoinThread(thread, (int *)value_ptr)) {
         return EINVAL;
     }
     return 0;
@@ -125,6 +199,8 @@ static int pthread_cond_init(pthread_cond_t *cond,
                              const pthread_condattr_t *attr)
 {
     OSInitCond(cond);
+    // OSInitCond doesn't return so just hope it's successful
+    return 0;
 }
 
 static int pthread_cond_destroy(pthread_cond_t *cond)
@@ -143,17 +219,51 @@ static int pthread_cond_signal(pthread_cond_t *cond)
 
 static int pthread_cond_broadcast(pthread_cond_t *cond)
 {
-    // OSSignalCond is already a broadcast:
-    // OSSignalCond: 
-    // Will wake up any threads waiting on the condition with OSWaitCond. 
+    // OSSignalCond is already a broadcast as shown from docs:
+
+    // "OSSignalCond: 
+    // Will wake up any threads waiting on the condition with OSWaitCond."
+    
     OSSignalCond(cond);
     return 0;
+}
+
+static void
+__wut_cond_timedwait_alarm_callback(OSAlarm *alarm,
+                                    OSContext *context)
+{
+    __wut_cond_timedwait_data_t *data = (__wut_cond_timedwait_data_t *)OSGetAlarmUserData(alarm);
+    data->timed_out                   = true;
+    OSSignalCond(data->cond);
 }
 
 static int pthread_cond_timedwait(pthread_cond_t *cond, 
                                   pthread_mutex_t *mutex,
                                   const struct timespec *abstime)
 {
+    __wut_cond_timedwait_data_t data;
+    data.timed_out = false;
+    data.cond      = cond;
+
+    OSTime time    = OSGetTime();
+    OSTime timeout =
+      OSSecondsToTicks(abstime->tv_sec - EPOCH_DIFF_SECS(WIIU_OSTIME_EPOCH_YEAR)) +
+      OSNanosecondsToTicks(abstime->tv_nsec);
+    if (timeout <= time) {
+        return ETIMEDOUT;
+    }
+
+    // Set an alarm
+    OSAlarm alarm;
+    OSCreateAlarm(&alarm);
+    OSSetAlarmUserData(&alarm, &data);
+    OSSetAlarm(&alarm, timeout - time,
+                &__wut_cond_timedwait_alarm_callback);
+    // Wait on the condition
+    OSWaitCond(cond, mutex);
+
+    OSCancelAlarm(&alarm);
+    return data.timed_out ? ETIMEDOUT : 0;
 
 }
 
@@ -163,9 +273,29 @@ static int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex)
     return 0;
 }
 
+
+// seems to implement some type of state machine
+// basically the way this works is that
+// if the function hasn't been run yet, run it 
+// and change "value"
+// if that chec determines that the function
+// has already run, just spin until it's done
 static int pthread_once(pthread_once_t *once_control,
                         void (*init_routine)(void))
 {
+    uint32_t value = 0;
+    if (OSCompareAndSwapAtomicEx(once_control,
+                                __WUT_ONCE_VALUE_INIT,
+                                __WUT_ONCE_VALUE_STARTED,
+                                &value)) {
+        init_routine();
+        OSSwapAtomic(once_control, __WUT_ONCE_VALUE_DONE);
+    } else if (value != __WUT_ONCE_VALUE_DONE) {
+        while (!OSCompareAndSwapAtomic(once_control,
+                                        __WUT_ONCE_VALUE_DONE,
+                                        __WUT_ONCE_VALUE_DONE));
+    }
+    return 0;
     
 }
 

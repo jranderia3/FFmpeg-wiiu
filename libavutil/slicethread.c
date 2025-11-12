@@ -26,7 +26,7 @@
 
 #define MAX_AUTO_THREADS 16
 
-#if HAVE_PTHREADS || HAVE_W32THREADS || HAVE_OS2THREADS
+#if HAVE_PTHREADS || HAVE_W32THREADS || HAVE_OS2THREADS || HAVE_WIIUTHREADS
 
 typedef struct WorkerContext {
     AVSliceThread   *ctx;

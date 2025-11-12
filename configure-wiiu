@@ -5,7 +5,7 @@
 
 export PATH=$DEVKITPPC/bin:$PATH
 export ARCH="-mcpu=750 -meabi -mhard-float"
-export CFLAGS="-fomit-frame-pointer -ffast-math -fno-math-errno -funsafe-math-optimizations -ffinite-math-only -fno-trapping-math -O3 -Ofast"
+export CFLAGS="-fomit-frame-pointer -ffast-math -fno-math-errno -funsafe-math-optimizations -ffinite-math-only -fno-trapping-math -O3 -Ofast -DHAVE_WIIUTHREADS"
 export PKGCONFIG="$DEVKITPRO/portlibs/ppc/bin/powerpc-eabi-pkg-config"
 export CONFIGLOG="config.log"
 ./configure --prefix=$DEVKITPRO/portlibs/ppc/ \
@@ -37,3 +37,5 @@ export CONFIGLOG="config.log"
 --disable-securetransport \
 --disable-xlib \
 --disable-zlib \
+--target-os="wiiu" \
+# DO NOT USE --enable-pthreads IT DOES NOT WORK AT ALL
