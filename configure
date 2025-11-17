@@ -2123,6 +2123,7 @@ THREADS_LIST="
 
 ATOMICS_LIST="
     atomics_win32
+    atomics_wiiu
 "
 
 AUTODETECT_LIBS="
@@ -5987,6 +5988,7 @@ case $target_os in
     wiiu)
         echo "CAFE OS detected so cool"
         enable_weak wiiuthreads
+        enable atomics_wiiu
         disable pthreads
         ;;
     none)
@@ -7810,6 +7812,8 @@ done
 if disabled stdatomic; then
     if enabled atomics_win32; then
         add_cppflags '-I\$(SRC_PATH)/compat/atomics/win32'
+    elif enabled atomics_wiiu; then
+        add_cppflags '-I\$(SRC_PATH)/compat/atomics/wiiu'
     else
         enabled threads && die "Threading is enabled, but no atomics are available"
         add_cppflags '-I\$(SRC_PATH)/compat/atomics/dummy'

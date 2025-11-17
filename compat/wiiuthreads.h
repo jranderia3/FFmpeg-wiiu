@@ -1,9 +1,14 @@
-#ifndef COMPAT_WIIUTHREADS_H
-#define COMPAT_WIIUTHREADS_H
-
 /**
  * @file Wrapper from Wii U threads to pthreads
  */
+
+#ifndef COMPAT_WIIUTHREADS_H
+#define COMPAT_WIIUTHREADS_H
+
+// prevent system pthread headers;
+// they're bloody useless
+#define __PTHREAD_h
+#define _SYS__PTHREADTYPES_H_
 
 #include <coreinit/thread.h>
 #include <coreinit/mutex.h>
@@ -24,6 +29,8 @@
 #include "libavutil/common.h"
 #include "libavutil/time.h"
 
+
+
 // enum from wut_thread_specific.h
 typedef enum __wut_thread_specific_id
 {
@@ -38,6 +45,7 @@ typedef enum __wut_thread_specific_id
 #define __WUT_ONCE_VALUE_INIT        (0)
 #define __WUT_ONCE_VALUE_STARTED     (1)
 #define __WUT_ONCE_VALUE_DONE        (2)
+#define PTHREAD_ONCE_INIT __WUT_ONCE_VALUE_INIT
 
 #define __WUT_KEY_THREAD_SPECIFIC_ID WUT_THREAD_SPECIFIC_0
 
@@ -123,7 +131,7 @@ static void __wut_thread_deallocator(OSThread *thread,
 static int pthread_create(pthread_t *out_thread, const pthread_attr_t *attr,
                           void *(*start_routine)(void*), void *arg)
 {
-    OSThread *thread = (OSThread *)memalign(16, sizeof(OSThread));
+    OSThread* thread = (OSThread *)memalign(16, sizeof(OSThread));
     if (!thread) {
         return ENOMEM;
     }
@@ -149,7 +157,7 @@ static int pthread_create(pthread_t *out_thread, const pthread_attr_t *attr,
         return EINVAL;
     }
 
-    *out_thread = thread;
+    out_thread = thread;
     OSSetThreadDeallocator(thread, &__wut_thread_deallocator);
     // OSSetThreadCleanupCallback(thread, &__wut_thread_cleanup);
 
@@ -163,7 +171,7 @@ static int pthread_create(pthread_t *out_thread, const pthread_attr_t *attr,
 
 static int pthread_join(pthread_t thread, void **value_ptr)
 {
-    if (!OSJoinThread(thread, (int *)value_ptr)) {
+    if (!OSJoinThread(&thread, (int *)value_ptr)) {
         return EINVAL;
     }
     return 0;
@@ -172,7 +180,8 @@ static int pthread_join(pthread_t thread, void **value_ptr)
 static int pthread_mutex_init(pthread_mutex_t *mutex,
                               const pthread_mutexattr_t *attr)
 {
-    return OSInitMutex(mutex);
+    OSInitMutex(mutex);
+    return 0;
 }
 
 static int pthread_mutex_destroy(pthread_mutex_t *mutex)
@@ -232,7 +241,7 @@ static void
 __wut_cond_timedwait_alarm_callback(OSAlarm *alarm,
                                     OSContext *context)
 {
-    __wut_cond_timedwait_data_t *data = (__wut_cond_timedwait_data_t *)OSGetAlarmUserData(alarm);
+    struct __wut_cond_timedwait_data_t *data = (struct __wut_cond_timedwait_data_t *)OSGetAlarmUserData(alarm);
     data->timed_out                   = true;
     OSSignalCond(data->cond);
 }
@@ -241,7 +250,7 @@ static int pthread_cond_timedwait(pthread_cond_t *cond,
                                   pthread_mutex_t *mutex,
                                   const struct timespec *abstime)
 {
-    __wut_cond_timedwait_data_t data;
+    struct __wut_cond_timedwait_data_t data;
     data.timed_out = false;
     data.cond      = cond;
 
@@ -297,6 +306,15 @@ static int pthread_once(pthread_once_t *once_control,
     }
     return 0;
     
+}
+
+static int pthread_kill(pthread_t thread, int sig)
+{
+    if (sig == 0) {
+        return 0;
+    }
+
+    return ENOSYS;
 }
 
 #endif
