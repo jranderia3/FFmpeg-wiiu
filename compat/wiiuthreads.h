@@ -5,17 +5,19 @@
 #ifndef COMPAT_WIIUTHREADS_H
 #define COMPAT_WIIUTHREADS_H
 
-// prevent system pthread headers;
-// they're bloody useless
-#define __PTHREAD_h
-#define _SYS__PTHREADTYPES_H_
+
+// #define __PTHREAD_h
+// #define _SYS__PTHREADTYPES_H_
+
+// typedef unsigned int pthread_t;
+// typedef unsigned int pthread_mutex_t;
 
 #include <coreinit/thread.h>
 #include <coreinit/mutex.h>
 #include <coreinit/atomic.h>
 #include <coreinit/condition.h>
 
-#include <stdint.h>
+// #include <stdint.h>
 #include <malloc.h>
 #include <string.h>
 #include <sys/errno.h>
@@ -74,6 +76,8 @@ typedef struct
     (EPOCH_DIFF_YEARS(year) - 1 + EPOCH_YEARS_SINCE_LEAP_CENTURY) / 400)
 #define EPOCH_DIFF_SECS(year) (60ull * 60ull * 24ull * (uint64_t)EPOCH_DIFF_DAYS(year))
 
+
+
 // I have no idea why we have to typedef this
 // But ok
 // typedef struct {
@@ -84,9 +88,21 @@ typedef struct
 // } pthread_t;
 
 // screw the above what if i just do this instead
-typedef OSThread pthread_t;
+// UPDATE: ok Ash the wii u god says to not do this so commented out 
+// She instructed me to use the system type (uint32_t) and just cast in and out of it
+// That is to say, treat pthread_t as OSThread*
+// typedef OSThread pthread_t;
 
-typedef OSThreadAttributes pthread_attr_t;
+
+
+// OK apparently typedefing pthread is REALLY bad
+// and causes about 99999999 errors 
+// so basically since pthread_types are basically
+// all uint32_t what if I just use them all as pointers
+// cause the wii u is a 32 bit system
+
+// to
+// typedef uint32_t pthread_attr_t;
 
 // There's something called a fast mutex
 // "Similar to OSMutex but tries to acquire the mutex 
@@ -94,19 +110,32 @@ typedef OSThreadAttributes pthread_attr_t;
 // and does not test for thread cancel"
 // Use that instead? Idk so I'll use this for now,
 // as it seems safer
-typedef OSMutex pthread_mutex_t;
-typedef void pthread_mutexattr_t;
+
+// typedef struct {
+//     OSMutex mutex;
+//     BOOL initialized;
+// } pthread_mutex_t;
+// typedef void pthread_mutexattr_t;
+
+
+#define OSMUTEX_UNINITIALIZED (pthread_mutex_t) 0x00000000
+#define PTHREAD_MUTEX_INITIALIZER OSMUTEX_UNINITIALIZED
+
+#define OSCONDITION_UNINITIALIZED (OSCondition) {0}
+#define PTHREAD_COND_INITIALIZER OSCONDITION_UNINITIALIZED
 
 // docs say something about OScondition
 // using a thread queue
 // need to figure out what's up with that
-typedef OSCondition pthread_cond_t;
-typedef void pthread_condattr_t;
+// typedef OSCondition pthread_cond_t;
+// typedef void pthread_condattr_t;
 
 
-typedef __wut_once_t pthread_once_t;
+// typedef __wut_once_t pthread_once_t;
 
 uint32_t __attribute__((weak)) __wut_thread_default_stack_size = __WUT_STACK_SIZE;
+
+// static inline int pthread_kill(pthread_t thread, int sig);
 
 #define ONCE_VALUE_INIT 0
 #define ONCE_VALUE_STARTED 1
@@ -128,7 +157,7 @@ static void __wut_thread_deallocator(OSThread *thread,
 }
 
 
-static int pthread_create(pthread_t *out_thread, const pthread_attr_t *attr,
+static av_unused int pthread_create(pthread_t* out_thread, const pthread_attr_t *attr,
                           void *(*start_routine)(void*), void *arg)
 {
     OSThread* thread = (OSThread *)memalign(16, sizeof(OSThread));
@@ -157,7 +186,7 @@ static int pthread_create(pthread_t *out_thread, const pthread_attr_t *attr,
         return EINVAL;
     }
 
-    out_thread = thread;
+    *out_thread = (uint32_t) thread;
     OSSetThreadDeallocator(thread, &__wut_thread_deallocator);
     // OSSetThreadCleanupCallback(thread, &__wut_thread_cleanup);
 
@@ -169,22 +198,27 @@ static int pthread_create(pthread_t *out_thread, const pthread_attr_t *attr,
     return 0;
 }
 
-static int pthread_join(pthread_t thread, void **value_ptr)
+static av_unused int pthread_join(pthread_t thread, void **value_ptr)
 {
-    if (!OSJoinThread(&thread, (int *)value_ptr)) {
+    if (!OSJoinThread((OSThread*) thread, (int *)value_ptr)) {
         return EINVAL;
     }
     return 0;
 }
 
-static int pthread_mutex_init(pthread_mutex_t *mutex,
+static inline int pthread_mutex_init(pthread_mutex_t *out_mutex,
                               const pthread_mutexattr_t *attr)
 {
+    OSMutex* mutex = (OSMutex *)memalign(16, sizeof(OSMutex));
+    if (!mutex) {
+        return ENOMEM;
+    }
     OSInitMutex(mutex);
+    *out_mutex = (uint32_t) mutex;
     return 0;
 }
 
-static int pthread_mutex_destroy(pthread_mutex_t *mutex)
+static inline int pthread_mutex_destroy(pthread_mutex_t *mutex)
 {
     // no function to destroy mutex on cafe os
     // https://wut.devkitpro.org/mutex_8h.html
@@ -192,27 +226,46 @@ static int pthread_mutex_destroy(pthread_mutex_t *mutex)
     return 0;
 }
 
-static int pthread_mutex_lock(pthread_mutex_t *mutex)
+static inline int pthread_mutex_lock(pthread_mutex_t *mutex)
 {
-    OSLockMutex(mutex);
+    // a mutex is not guaranteed to be initialized
+    // since some code will just say 
+    // pthread_mutex_t foo = PTHREAD_MUTEX_INITIALIZER;
+    // check for this, and if so, initialize mutex
+    if (*mutex == OSMUTEX_UNINITIALIZED) {
+        pthread_mutex_init(mutex, 0);
+    }
+    OSLockMutex((OSMutex*) *mutex);
     return 0;
 }
 
-static int pthread_mutex_unlock(pthread_mutex_t *mutex)
+static inline int pthread_mutex_unlock(pthread_mutex_t *mutex)
 {
-    OSUnlockMutex(mutex);
+    // a mutex is not guaranteed to be initialized
+    // since some code will just say 
+    // pthread_mutex_t foo = PTHREAD_MUTEX_INITIALIZER;
+    // check for this, and if so, initialize mutex
+    if (*mutex == OSMUTEX_UNINITIALIZED) {
+        pthread_mutex_init(mutex, 0);
+    }
+    OSUnlockMutex((OSMutex*) *mutex);
     return 0;
 }
 
-static int pthread_cond_init(pthread_cond_t *cond,
+static inline int pthread_cond_init(pthread_cond_t *cond,
                              const pthread_condattr_t *attr)
 {
-    OSInitCond(cond);
+    OSCondition* condition = (OSCondition*) memalign(16, sizeof(OSCondition));
+    if(!condition) {
+        return ENOMEM;
+    }
+    OSInitCond(condition);
+    *cond = (uint32_t) condition;
     // OSInitCond doesn't return so just hope it's successful
     return 0;
 }
 
-static int pthread_cond_destroy(pthread_cond_t *cond)
+static inline int pthread_cond_destroy(pthread_cond_t *cond)
 {
     // no function to destroy cond on cafe os
     // https://wut.devkitpro.org/group__coreinit__cond.html
@@ -220,20 +273,20 @@ static int pthread_cond_destroy(pthread_cond_t *cond)
     return 0;
 }
 
-static int pthread_cond_signal(pthread_cond_t *cond)
+static inline int pthread_cond_signal(pthread_cond_t *cond)
 {
-    OSSignalCond(cond);
+    OSSignalCond((OSCondition*)(*cond));
     return 0;
 }
 
-static int pthread_cond_broadcast(pthread_cond_t *cond)
+static inline int pthread_cond_broadcast(pthread_cond_t *cond)
 {
     // OSSignalCond is already a broadcast as shown from docs:
 
     // "OSSignalCond: 
     // Will wake up any threads waiting on the condition with OSWaitCond."
     
-    OSSignalCond(cond);
+    OSSignalCond((OSCondition*)(*cond));
     return 0;
 }
 
@@ -246,13 +299,13 @@ __wut_cond_timedwait_alarm_callback(OSAlarm *alarm,
     OSSignalCond(data->cond);
 }
 
-static int pthread_cond_timedwait(pthread_cond_t *cond, 
+static inline int pthread_cond_timedwait(pthread_cond_t *cond, 
                                   pthread_mutex_t *mutex,
                                   const struct timespec *abstime)
 {
     struct __wut_cond_timedwait_data_t data;
     data.timed_out = false;
-    data.cond      = cond;
+    data.cond      = (OSCondition*) *cond;
 
     OSTime time    = OSGetTime();
     OSTime timeout =
@@ -269,16 +322,19 @@ static int pthread_cond_timedwait(pthread_cond_t *cond,
     OSSetAlarm(&alarm, timeout - time,
                 &__wut_cond_timedwait_alarm_callback);
     // Wait on the condition
-    OSWaitCond(cond, mutex);
+    if (*mutex == OSMUTEX_UNINITIALIZED) {
+        pthread_mutex_init(mutex, 0);
+    }
+    OSWaitCond((OSCondition*) *cond, (OSMutex*) *mutex);
 
     OSCancelAlarm(&alarm);
     return data.timed_out ? ETIMEDOUT : 0;
 
 }
 
-static int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex)
+static inline int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex)
 {
-    OSWaitCond(cond, mutex);
+    OSWaitCond((OSCondition*)*cond, (OSMutex*) *mutex);
     return 0;
 }
 
@@ -289,7 +345,7 @@ static int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex)
 // and change "value"
 // if that chec determines that the function
 // has already run, just spin until it's done
-static int pthread_once(pthread_once_t *once_control,
+static av_unused int wut_thread_once(__wut_once_t *once_control,
                         void (*init_routine)(void))
 {
     uint32_t value = 0;
@@ -307,14 +363,4 @@ static int pthread_once(pthread_once_t *once_control,
     return 0;
     
 }
-
-static int pthread_kill(pthread_t thread, int sig)
-{
-    if (sig == 0) {
-        return 0;
-    }
-
-    return ENOSYS;
-}
-
 #endif
