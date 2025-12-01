@@ -18,8 +18,8 @@ export CONFIGLOG="config.log"
 --disable-doc \
 --disable-everything \
 --disable-network \
---enable-decoder=mpeg4,h264_wiiu,aac,ac3,mp3 \
---enable-demuxer=mov,h264 \
+--enable-decoder=mpeg4,h264_wiiu,aac,ac3,mp3,h264,vp9 \
+--enable-demuxer=mov,h264,matroska \
 --enable-bsf=h264_mp4toannexb \
 --enable-filter=rotate,transpose \
 --enable-protocol=file \

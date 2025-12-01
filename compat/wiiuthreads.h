@@ -156,6 +156,10 @@ static void __wut_thread_deallocator(OSThread *thread,
    free(stack);
 }
 
+static inline pthread_t pthread_self(void)
+{
+    return (uint32_t) OSGetCurrentThread();
+}
 
 static av_unused int pthread_create(pthread_t* out_thread, const pthread_attr_t *attr,
                           void *(*start_routine)(void*), void *arg)
@@ -200,9 +204,14 @@ static av_unused int pthread_create(pthread_t* out_thread, const pthread_attr_t 
 
 static av_unused int pthread_join(pthread_t thread, void **value_ptr)
 {
-    if (!OSJoinThread((OSThread*) thread, (int *)value_ptr)) {
+    int thread_result;
+    if (!OSJoinThread((OSThread*) thread, &thread_result)) {
         return EINVAL;
     }
+    if (value_ptr) {
+        *value_ptr = (void*)(intptr_t)thread_result;
+    }
+    OSDetachThread((OSThread*) thread);
     return 0;
 }
 
@@ -220,6 +229,7 @@ static inline int pthread_mutex_init(pthread_mutex_t *out_mutex,
 
 static inline int pthread_mutex_destroy(pthread_mutex_t *mutex)
 {
+    free((OSMutex*) *mutex);
     // no function to destroy mutex on cafe os
     // https://wut.devkitpro.org/mutex_8h.html
     // so just return 0 lmao
@@ -228,6 +238,9 @@ static inline int pthread_mutex_destroy(pthread_mutex_t *mutex)
 
 static inline int pthread_mutex_lock(pthread_mutex_t *mutex)
 {
+    if (!mutex) {
+        return EINVAL;
+    }
     // a mutex is not guaranteed to be initialized
     // since some code will just say 
     // pthread_mutex_t foo = PTHREAD_MUTEX_INITIALIZER;
@@ -236,11 +249,15 @@ static inline int pthread_mutex_lock(pthread_mutex_t *mutex)
         pthread_mutex_init(mutex, 0);
     }
     OSLockMutex((OSMutex*) *mutex);
+    printf("[FFMPEG][MUTEX] Thread %p locking mutex %p\n", pthread_self(), mutex);
     return 0;
 }
 
 static inline int pthread_mutex_unlock(pthread_mutex_t *mutex)
 {
+    if (!mutex) {
+        return EINVAL;
+    }
     // a mutex is not guaranteed to be initialized
     // since some code will just say 
     // pthread_mutex_t foo = PTHREAD_MUTEX_INITIALIZER;
@@ -249,6 +266,7 @@ static inline int pthread_mutex_unlock(pthread_mutex_t *mutex)
         pthread_mutex_init(mutex, 0);
     }
     OSUnlockMutex((OSMutex*) *mutex);
+    printf("[FFMPEG][MUTEX] Thread %p unlocking mutex %p\n", pthread_self(), mutex);
     return 0;
 }
 
@@ -267,6 +285,11 @@ static inline int pthread_cond_init(pthread_cond_t *cond,
 
 static inline int pthread_cond_destroy(pthread_cond_t *cond)
 {
+    if (!cond) {
+        return EINVAL;
+    }
+
+    free((OSCondition*) *cond);
     // no function to destroy cond on cafe os
     // https://wut.devkitpro.org/group__coreinit__cond.html
     // so just return 0 lmao
@@ -275,12 +298,22 @@ static inline int pthread_cond_destroy(pthread_cond_t *cond)
 
 static inline int pthread_cond_signal(pthread_cond_t *cond)
 {
+    if (!cond) {
+        return EINVAL;
+    }
+    if (((OSCondition*) *cond)->tag != OS_CONDITION_TAG) {
+        printf("[FFMPEG][COND] Attempting to signal uninitialized condition for cond %p\n", cond);
+    }
     OSSignalCond((OSCondition*)(*cond));
+    printf("[FFMPEG][COND] Signal completed for cond %p\n", cond);
     return 0;
 }
 
 static inline int pthread_cond_broadcast(pthread_cond_t *cond)
 {
+    if (!cond) {
+        return EINVAL;
+    }
     // OSSignalCond is already a broadcast as shown from docs:
 
     // "OSSignalCond: 
@@ -306,7 +339,7 @@ static inline int pthread_cond_timedwait(pthread_cond_t *cond,
     struct __wut_cond_timedwait_data_t data;
     data.timed_out = false;
     data.cond      = (OSCondition*) *cond;
-
+    
     OSTime time    = OSGetTime();
     OSTime timeout =
       OSSecondsToTicks(abstime->tv_sec - EPOCH_DIFF_SECS(WIIU_OSTIME_EPOCH_YEAR)) +
@@ -325,8 +358,9 @@ static inline int pthread_cond_timedwait(pthread_cond_t *cond,
     if (*mutex == OSMUTEX_UNINITIALIZED) {
         pthread_mutex_init(mutex, 0);
     }
+    printf("[FFMPEG][COND] Thread %p timed waiting on cond %p\n", pthread_self(), cond);
     OSWaitCond((OSCondition*) *cond, (OSMutex*) *mutex);
-
+    printf("[FFMPEG][COND] Thread %p timed woke up from cond %p\n", pthread_self(), cond);
     OSCancelAlarm(&alarm);
     return data.timed_out ? ETIMEDOUT : 0;
 
@@ -334,7 +368,10 @@ static inline int pthread_cond_timedwait(pthread_cond_t *cond,
 
 static inline int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex)
 {
+    printf("[FFMPEG][COND] Thread %p waiting on cond %p\n", pthread_self(), cond);
     OSWaitCond((OSCondition*)*cond, (OSMutex*) *mutex);
+    // av_usleep(1000);
+    printf("[FFMPEG][COND] Thread %p woke up from cond %p\n", pthread_self(), cond);
     return 0;
 }
 
@@ -359,6 +396,8 @@ static av_unused int wut_thread_once(__wut_once_t *once_control,
         while (!OSCompareAndSwapAtomic(once_control,
                                         __WUT_ONCE_VALUE_DONE,
                                         __WUT_ONCE_VALUE_DONE));
+        OSYieldThread();
+        av_usleep(1000);
     }
     return 0;
     
